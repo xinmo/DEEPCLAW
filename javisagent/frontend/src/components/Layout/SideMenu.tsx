@@ -1,24 +1,29 @@
 import React, { useState } from 'react';
 import { Layout, Menu } from 'antd';
-import { FileText, Settings, User, Cog, ChevronLeft, ChevronRight } from 'lucide-react';
+import { FileText, Settings, User, Cog, ChevronLeft, ChevronRight, Languages, Mic, Database, FolderOpen, MessageSquare } from 'lucide-react';
 
 const { Sider } = Layout;
 
-const SideMenu: React.FC = () => {
+interface SideMenuProps {
+  onMenuSelect?: (key: string) => void;
+  selectedKey?: string;
+}
+
+const SideMenu: React.FC<SideMenuProps> = ({ onMenuSelect, selectedKey = 'document-parse' }) => {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <Sider 
-      width={200} 
+    <Sider
+      width={200}
       collapsed={collapsed}
       collapsedWidth={64}
       style={{ background: '#fff', borderRight: '1px solid #f0f0f0' }}
       trigger={null}
     >
-      <div style={{ 
-        padding: collapsed ? '16px 8px' : '16px', 
-        fontSize: collapsed ? '14px' : '18px', 
-        fontWeight: 'bold', 
+      <div style={{
+        padding: collapsed ? '16px 8px' : '16px',
+        fontSize: collapsed ? '14px' : '18px',
+        fontWeight: 'bold',
         color: '#1890ff',
         display: 'flex',
         alignItems: 'center',
@@ -30,9 +35,10 @@ const SideMenu: React.FC = () => {
       </div>
       <Menu
         mode="inline"
-        defaultSelectedKeys={['document-parse']}
-        defaultOpenKeys={['smart-parse']}
+        selectedKeys={[selectedKey]}
+        defaultOpenKeys={['smart-parse', 'smart-translate', 'smart-knowledge']}
         style={{ height: 'calc(100% - 64px)', borderRight: 0 }}
+        onClick={({ key }) => onMenuSelect?.(key)}
         items={[
           {
             key: 'smart-parse',
@@ -43,6 +49,35 @@ const SideMenu: React.FC = () => {
                 key: 'document-parse',
                 label: collapsed ? '' : '文档解析',
                 icon: <FileText size={16} />
+              }
+            ]
+          },
+          {
+            key: 'smart-translate',
+            label: collapsed ? '' : '智能翻译',
+            icon: <Languages size={16} />,
+            children: [
+              {
+                key: 'realtime-translate',
+                label: collapsed ? '' : '实时翻译',
+                icon: <Mic size={16} />
+              }
+            ]
+          },
+          {
+            key: 'smart-knowledge',
+            label: collapsed ? '' : '智能知识库',
+            icon: <Database size={16} />,
+            children: [
+              {
+                key: 'knowledge-base',
+                label: collapsed ? '' : '知识库管理',
+                icon: <FolderOpen size={16} />
+              },
+              {
+                key: 'knowledge-chat',
+                label: collapsed ? '' : '知识问答',
+                icon: <MessageSquare size={16} />
               }
             ]
           },
@@ -65,7 +100,7 @@ const SideMenu: React.FC = () => {
           }
         ]}
       />
-      <div 
+      <div
         style={{
           position: 'absolute',
           right: -12,
