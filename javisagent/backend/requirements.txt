@@ -1,8 +1,28 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 pydantic
 pydantic-settings
 python-dotenv
 requests
 python-multipart
+# 翻译模块依赖
+websockets
+httpx
+webrtcvad
+numpy
+aiofiles
+
+# 知识库 RAG 模块依赖
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-openai>=0.0.5
+langchain-anthropic>=0.1.0
+pymilvus>=2.3.0
+dashscope>=1.14.0
+zhipuai>=2.0.0
+anthropic>=0.18.0
+sentence-transformers>=2.3.0
+FlagEmbedding>=1.2.0
+rank-bm25>=0.2.2
+cryptography>=42.0.0
