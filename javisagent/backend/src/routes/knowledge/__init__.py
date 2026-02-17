@@ -1,1 +1,1 @@
-from .kb import router as kb_router
+from .chat import router as chat_router
