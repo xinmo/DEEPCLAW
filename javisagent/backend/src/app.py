@@ -4,7 +4,7 @@ from src.models import Base, engine
 from src.routes import document
 from src.routes.translate import clone_router, ws_router
 from src.routes.knowledge import kb_router, documents_router, chat_router, graph_router
-from src.routes.claw import conversations_router
+from src.routes.claw import conversations_router, chat_router as claw_chat_router
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
@@ -33,6 +33,7 @@ app.include_router(documents_router)
 app.include_router(chat_router)
 app.include_router(graph_router)
 app.include_router(conversations_router)
+app.include_router(claw_chat_router)
 
 @app.get('/')
 async def root():
