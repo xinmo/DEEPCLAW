@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from models import Base, engine
-from routes import document
+from src.models import Base, engine
+from src.routes import document
+from src.routes.translate import clone_router, ws_router
+from src.routes.knowledge import kb_router, documents_router, chat_router, graph_router
+from src.routes.claw import conversations_router
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
@@ -23,6 +26,13 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(document.router)
+app.include_router(clone_router)
+app.include_router(ws_router)
+app.include_router(kb_router)
+app.include_router(documents_router)
+app.include_router(chat_router)
+app.include_router(graph_router)
+app.include_router(conversations_router)
 
 @app.get('/')
 async def root():
