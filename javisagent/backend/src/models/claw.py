@@ -9,6 +9,7 @@ import enum
 class ClawConversation(Base):
     """Claw 对话会话"""
     __tablename__ = "claw_conversations"
+    __table_args__ = {'extend_existing': True}
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     title = Column(String(255), nullable=False, default="新对话")
@@ -29,6 +30,7 @@ class MessageRole(str, enum.Enum):
 class ClawMessage(Base):
     """Claw 消息记录"""
     __tablename__ = "claw_messages"
+    __table_args__ = {'extend_existing': True}
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     conversation_id = Column(String, ForeignKey("claw_conversations.id"), nullable=False)
@@ -51,6 +53,7 @@ class ToolCallStatus(str, enum.Enum):
 class ClawToolCall(Base):
     """工具调用记录"""
     __tablename__ = "claw_tool_calls"
+    __table_args__ = {'extend_existing': True}
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     message_id = Column(String, ForeignKey("claw_messages.id"), nullable=False)
