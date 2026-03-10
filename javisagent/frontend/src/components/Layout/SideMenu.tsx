@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Layout, Menu } from 'antd';
-import { FileText, Settings, User, Cog, ChevronLeft, ChevronRight, Languages, Mic, Database, FolderOpen, MessageSquare } from 'lucide-react';
+import { FileText, Settings, User, Cog, ChevronLeft, ChevronRight, Languages, Mic, Database, FolderOpen, MessageSquare, Bot } from 'lucide-react';
 
 const { Sider } = Layout;
 
@@ -36,7 +36,7 @@ const SideMenu: React.FC<SideMenuProps> = ({ onMenuSelect, selectedKey = 'docume
       <Menu
         mode="inline"
         selectedKeys={[selectedKey]}
-        defaultOpenKeys={['smart-parse', 'smart-translate', 'smart-knowledge']}
+        defaultOpenKeys={['smart-parse', 'smart-translate', 'smart-knowledge', 'claw']}
         style={{ height: 'calc(100% - 64px)', borderRight: 0 }}
         onClick={({ key }) => onMenuSelect?.(key)}
         items={[
@@ -77,6 +77,18 @@ const SideMenu: React.FC<SideMenuProps> = ({ onMenuSelect, selectedKey = 'docume
               {
                 key: 'knowledge-chat',
                 label: collapsed ? '' : '知识问答',
+                icon: <MessageSquare size={16} />
+              }
+            ]
+          },
+          {
+            key: 'claw',
+            label: collapsed ? '' : 'Claw',
+            icon: <Bot size={16} />,
+            children: [
+              {
+                key: 'claw-chat',
+                label: collapsed ? '' : '对话龙虾',
                 icon: <MessageSquare size={16} />
               }
             ]
