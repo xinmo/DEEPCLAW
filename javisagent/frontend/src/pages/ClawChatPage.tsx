@@ -35,13 +35,22 @@ import type {
   ClawMessage,
   ModelInfo,
   SSEEvent,
+  ToolCall,
+  SubAgent,
+  PlanningTask,
 } from '../types/claw';
+import ToolCallCard from '../components/Claw/ToolCallCard';
+import SubAgentCard from '../components/Claw/SubAgentCard';
+import PlanningCard from '../components/Claw/PlanningCard';
 
 // 聊天消息显示类型（包含流式状态）
 interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
+  toolCalls?: ToolCall[];
+  subAgents?: SubAgent[];
+  planningTasks?: PlanningTask[];
   isStreaming?: boolean;
 }
 
@@ -177,6 +186,9 @@ const ClawChatPage: React.FC = () => {
 
     try {
       let assistantContent = '';
+      const toolCalls: ToolCall[] = [];
+      const subAgents: SubAgent[] = [];
+      let planningTasks: PlanningTask[] = [];
 
       await clawApi.sendMessage(
         currentConvId,
@@ -189,6 +201,99 @@ const ClawChatPage: React.FC = () => {
               const lastMsg = newMessages[newMessages.length - 1];
               if (lastMsg.role === 'assistant') {
                 lastMsg.content = assistantContent;
+              }
+              return newMessages;
+            });
+          } else if (event.type === 'tool_call') {
+            // 工具调用开始
+            const toolCall: ToolCall = {
+              id: event.tool_id || `tool_${Date.now()}`,
+              toolName: event.tool_name,
+              status: 'running',
+              input: event.tool_input
+            };
+            toolCalls.push(toolCall);
+            setMessages(prev => {
+              const newMessages = [...prev];
+              const lastMsg = newMessages[newMessages.length - 1];
+              if (lastMsg.role === 'assistant') {
+                lastMsg.toolCalls = [...toolCalls];
+              }
+              return newMessages;
+            });
+          } else if (event.type === 'tool_result') {
+            // 工具调用结果
+            const toolCall = toolCalls.find(t => t.toolName === event.tool_name);
+            if (toolCall) {
+              toolCall.status = event.status || 'success';
+              toolCall.output = event.output;
+              toolCall.duration = event.duration;
+              toolCall.error = event.error;
+              setMessages(prev => {
+                const newMessages = [...prev];
+                const lastMsg = newMessages[newMessages.length - 1];
+                if (lastMsg.role === 'assistant') {
+                  lastMsg.toolCalls = [...toolCalls];
+                }
+                return newMessages;
+              });
+            }
+          } else if (event.type === 'subagent_start') {
+            // 子智能体启动
+            const subAgent: SubAgent = {
+              id: event.agent_id,
+              name: event.agent_name,
+              task: event.task,
+              status: 'running',
+              progress: 0
+            };
+            subAgents.push(subAgent);
+            setMessages(prev => {
+              const newMessages = [...prev];
+              const lastMsg = newMessages[newMessages.length - 1];
+              if (lastMsg.role === 'assistant') {
+                lastMsg.subAgents = [...subAgents];
+              }
+              return newMessages;
+            });
+          } else if (event.type === 'subagent_progress') {
+            // 子智能体进度
+            const subAgent = subAgents.find(s => s.id === event.agent_id);
+            if (subAgent) {
+              subAgent.progress = event.progress;
+              setMessages(prev => {
+                const newMessages = [...prev];
+                const lastMsg = newMessages[newMessages.length - 1];
+                if (lastMsg.role === 'assistant') {
+                  lastMsg.subAgents = [...subAgents];
+                }
+                return newMessages;
+              });
+            }
+          } else if (event.type === 'subagent_complete') {
+            // 子智能体完成
+            const subAgent = subAgents.find(s => s.id === event.agent_id);
+            if (subAgent) {
+              subAgent.status = 'success';
+              subAgent.result = event.result;
+              subAgent.duration = event.duration;
+              setMessages(prev => {
+                const newMessages = [...prev];
+                const lastMsg = newMessages[newMessages.length - 1];
+                if (lastMsg.role === 'assistant') {
+                  lastMsg.subAgents = [...subAgents];
+                }
+                return newMessages;
+              });
+            }
+          } else if (event.type === 'planning') {
+            // 规划任务
+            planningTasks = event.tasks || [];
+            setMessages(prev => {
+              const newMessages = [...prev];
+              const lastMsg = newMessages[newMessages.length - 1];
+              if (lastMsg.role === 'assistant') {
+                lastMsg.planningTasks = [...planningTasks];
               }
               return newMessages;
             });
@@ -422,6 +527,31 @@ const ClawChatPage: React.FC = () => {
                     }}>
                       {msg.content || (msg.isStreaming ? <Spin size="small" /> : '(空消息)')}
                     </div>
+
+                    {/* 工具调用卡片 */}
+                    {msg.toolCalls && msg.toolCalls.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        {msg.toolCalls.map((toolCall) => (
+                          <ToolCallCard key={toolCall.id} toolCall={toolCall} />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 子智能体卡片 */}
+                    {msg.subAgents && msg.subAgents.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        {msg.subAgents.map((subAgent) => (
+                          <SubAgentCard key={subAgent.id} subAgent={subAgent} />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 规划任务卡片 */}
+                    {msg.planningTasks && msg.planningTasks.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <PlanningCard tasks={msg.planningTasks} />
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
