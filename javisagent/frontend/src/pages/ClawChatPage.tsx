@@ -1,10 +1,265 @@
-import React from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  Card,
+  Select,
+  Input,
+  Button,
+  Avatar,
+  Empty,
+  Spin,
+  message,
+  Menu,
+  Popconfirm,
+  Typography,
+  Tooltip,
+  Drawer,
+} from 'antd';
+import {
+  SendOutlined,
+  UserOutlined,
+  RobotOutlined,
+  FolderOutlined,
+  PlusOutlined,
+  DeleteOutlined,
+  MessageOutlined,
+  EditOutlined,
+  CopyOutlined,
+  SearchOutlined,
+  MenuOutlined,
+  CheckOutlined,
+  CloseOutlined,
+} from '@ant-design/icons';
+import { clawApi } from '../services/clawApi';
+import type {
+  ClawConversation,
+  ClawMessage,
+  ModelInfo,
+  SSEEvent,
+} from '../types/claw';
+
+// 聊天消息显示类型（包含流式状态）
+interface ChatMessage {
+  id?: string;
+  role: 'user' | 'assistant';
+  content: string;
+  isStreaming?: boolean;
+}
 
 const ClawChatPage: React.FC = () => {
+  // 对话状态
+  const [conversations, setConversations] = useState<ClawConversation[]>([]);
+  const [currentConvId, setCurrentConvId] = useState<string | null>(() => {
+    return localStorage.getItem('claw_chat_conv_id');
+  });
+  const [convLoading, setConvLoading] = useState(false);
+
+  // 消息状态
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputValue, setInputValue] = useState('');
+  const [sending, setSending] = useState(false);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+
+  // 配置状态
+  const [workingDirectory, setWorkingDirectory] = useState('');
+  const [selectedModel, setSelectedModel] = useState('claude-opus-4-6');
+  const [models, setModels] = useState<ModelInfo[]>([]);
+
+  // 编辑状态
+  const [editingConvId, setEditingConvId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+
+  // 搜索
+  const [searchKeyword, setSearchKeyword] = useState('');
+
+  // 响应式
+  const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  // 加载对话列表
+  const loadConversations = useCallback(async () => {
+    setConvLoading(true);
+    try {
+      const data = await clawApi.listConversations();
+      setConversations(data);
+    } catch (error) {
+      message.error('加载对话列表失败');
+    } finally {
+      setConvLoading(false);
+    }
+  }, []);
+
+  // 加载模型列表
+  const loadModels = useCallback(async () => {
+    try {
+      const data = await clawApi.listModels();
+      setModels(data);
+    } catch (error) {
+      message.error('加载模型列表失败');
+    }
+  }, []);
+
+  // 初始化
+  useEffect(() => {
+    loadConversations();
+    loadModels();
+  }, [loadConversations, loadModels]);
+
+  // 保存当前对话 ID
+  useEffect(() => {
+    if (currentConvId) {
+      localStorage.setItem('claw_chat_conv_id', currentConvId);
+    } else {
+      localStorage.removeItem('claw_chat_conv_id');
+    }
+  }, [currentConvId]);
+
+  // 响应式监听
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 过滤对话
+  const filteredConversations = conversations.filter((conv) =>
+    conv.title.toLowerCase().includes(searchKeyword.toLowerCase())
+  );
+
+  // 对话列表渲染
+  const renderConversationList = () => (
+    <>
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0' }}>
+        <Input
+          placeholder="搜索对话..."
+          prefix={<SearchOutlined style={{ color: '#999' }} />}
+          value={searchKeyword}
+          onChange={(e) => setSearchKeyword(e.target.value)}
+          allowClear
+          size="small"
+        />
+      </div>
+      {convLoading ? (
+        <div style={{ textAlign: 'center', padding: 24 }}>
+          <Spin />
+        </div>
+      ) : filteredConversations.length === 0 ? (
+        <Empty description={searchKeyword ? '无匹配对话' : '暂无对话'} style={{ marginTop: 40 }} />
+      ) : (
+        <Menu
+          mode="inline"
+          selectedKeys={currentConvId ? [currentConvId] : []}
+          style={{ border: 'none' }}
+          items={filteredConversations.map((conv) => ({
+            key: conv.id,
+            icon: <MessageOutlined />,
+            label: conv.title,
+            onClick: () => setCurrentConvId(conv.id)
+          }))}
+        />
+      )}
+    </>
+  );
+
   return (
-    <div>
-      <h1>Claw - 对话龙虾</h1>
-      <p>功能开发中...</p>
+    <div style={{ display: 'flex', height: '100%', padding: 16, gap: 16 }}>
+      {/* 移动端抽屉 */}
+      <Drawer
+        title="对话历史"
+        placement="left"
+        open={sidebarDrawerOpen}
+        onClose={() => setSidebarDrawerOpen(false)}
+        width={280}
+        bodyStyle={{ padding: 0 }}
+      >
+        {renderConversationList()}
+      </Drawer>
+
+      {/* 左侧：对话列表（桌面端） */}
+      {!isMobile && (
+        <Card
+          title="对话历史"
+          style={{ width: 280, display: 'flex', flexDirection: 'column' }}
+          bodyStyle={{ flex: 1, overflow: 'auto', padding: 0 }}
+          extra={
+            <Tooltip title="新建对话">
+              <Button type="primary" icon={<PlusOutlined />} size="small">
+                新建
+              </Button>
+            </Tooltip>
+          }
+        >
+          {renderConversationList()}
+        </Card>
+      )}
+
+      {/* 右侧：聊天区域 */}
+      <Card
+        style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+        bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {isMobile && <MenuOutlined onClick={() => setSidebarDrawerOpen(true)} />}
+            <span>Claw - 对话龙虾</span>
+          </div>
+        }
+        extra={
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <Input
+              prefix={<FolderOutlined />}
+              placeholder="工作目录"
+              value={workingDirectory}
+              onChange={(e) => setWorkingDirectory(e.target.value)}
+              style={{ width: 200 }}
+              size="small"
+            />
+            <Select
+              value={selectedModel}
+              onChange={setSelectedModel}
+              style={{ width: 160 }}
+              size="small"
+              options={models.map((m) => ({
+                label: m.name,
+                value: m.model_id
+              }))}
+            />
+          </div>
+        }
+      >
+        {/* 消息区域 */}
+        <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+          {!currentConvId ? (
+            <Empty description="选择或创建对话开始聊天" />
+          ) : messagesLoading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}>
+              <Spin />
+            </div>
+          ) : (
+            <div>消息列表（待实现）</div>
+          )}
+        </div>
+
+        {/* 输入区域 */}
+        <div style={{ padding: 16, borderTop: '1px solid #f0f0f0' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Input.TextArea
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="输入消息..."
+              autoSize={{ minRows: 1, maxRows: 4 }}
+              disabled={!currentConvId || sending}
+            />
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              onClick={() => {/* TODO */}}
+              disabled={!currentConvId || !inputValue.trim() || sending}
+              loading={sending}
+            >
+              发送
+            </Button>
+          </div>
+        </div>
+      </Card>
     </div>
   );
 };
