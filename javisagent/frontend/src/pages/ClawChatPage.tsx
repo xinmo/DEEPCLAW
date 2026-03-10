@@ -124,6 +124,100 @@ const ClawChatPage: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // 加载消息历史
+  useEffect(() => {
+    if (!currentConvId) {
+      setMessages([]);
+      return;
+    }
+
+    const loadMessages = async () => {
+      setMessagesLoading(true);
+      try {
+        const data = await clawApi.getMessages(currentConvId);
+        setMessages(data.map(msg => ({
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          isStreaming: false
+        })));
+      } catch (error) {
+        message.error('加载消息失败');
+      } finally {
+        setMessagesLoading(false);
+      }
+    };
+
+    loadMessages();
+  }, [currentConvId]);
+
+  // 发送消息
+  const handleSendMessage = async () => {
+    if (!currentConvId || !inputValue.trim()) return;
+
+    const userMessage = inputValue.trim();
+    setInputValue('');
+    setSending(true);
+
+    // 添加用户消息
+    const userMsg: ChatMessage = {
+      role: 'user',
+      content: userMessage,
+      isStreaming: false
+    };
+    setMessages(prev => [...prev, userMsg]);
+
+    // 添加 Assistant 占位消息
+    const assistantMsg: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      isStreaming: true
+    };
+    setMessages(prev => [...prev, assistantMsg]);
+
+    try {
+      let assistantContent = '';
+
+      await clawApi.sendMessage(
+        currentConvId,
+        { content: userMessage },
+        (event: SSEEvent) => {
+          if (event.type === 'text') {
+            assistantContent += event.content;
+            setMessages(prev => {
+              const newMessages = [...prev];
+              const lastMsg = newMessages[newMessages.length - 1];
+              if (lastMsg.role === 'assistant') {
+                lastMsg.content = assistantContent;
+              }
+              return newMessages;
+            });
+          } else if (event.type === 'done') {
+            setMessages(prev => {
+              const newMessages = [...prev];
+              const lastMsg = newMessages[newMessages.length - 1];
+              if (lastMsg.role === 'assistant') {
+                lastMsg.isStreaming = false;
+              }
+              return newMessages;
+            });
+          } else if (event.type === 'error') {
+            message.error(event.message || '发送消息失败');
+          }
+        },
+        (error) => {
+          message.error('连接失败: ' + error.message);
+        }
+      );
+    } catch (error: any) {
+      message.error(error.message || '发送消息失败');
+      // 移除失败的 Assistant 消息
+      setMessages(prev => prev.slice(0, -1));
+    } finally {
+      setSending(false);
+    }
+  };
+
   // 过滤对话
   const filteredConversations = conversations.filter((conv) =>
     conv.title.toLowerCase().includes(searchKeyword.toLowerCase())
@@ -299,8 +393,39 @@ const ClawChatPage: React.FC = () => {
             <div style={{ textAlign: 'center', padding: 40 }}>
               <Spin />
             </div>
+          ) : messages.length === 0 ? (
+            <Empty description="暂无消息，开始对话吧" />
           ) : (
-            <div>消息列表（待实现）</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {messages.map((msg, index) => (
+                <div
+                  key={index}
+                  style={{
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start'
+                  }}
+                >
+                  <Avatar
+                    icon={msg.role === 'user' ? <UserOutlined /> : <RobotOutlined />}
+                    style={{
+                      backgroundColor: msg.role === 'user' ? '#1890ff' : '#52c41a',
+                      flexShrink: 0
+                    }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      background: msg.role === 'user' ? '#f0f0f0' : '#e6f7ff',
+                      padding: '12px 16px',
+                      borderRadius: 8,
+                      wordBreak: 'break-word'
+                    }}>
+                      {msg.content || (msg.isStreaming ? <Spin size="small" /> : '(空消息)')}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
 
@@ -313,11 +438,17 @@ const ClawChatPage: React.FC = () => {
               placeholder="输入消息..."
               autoSize={{ minRows: 1, maxRows: 4 }}
               disabled={!currentConvId || sending}
+              onPressEnter={(e) => {
+                if (!e.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage();
+                }
+              }}
             />
             <Button
               type="primary"
               icon={<SendOutlined />}
-              onClick={() => {/* TODO */}}
+              onClick={handleSendMessage}
               disabled={!currentConvId || !inputValue.trim() || sending}
               loading={sending}
             >
