@@ -75,6 +75,10 @@ const ClawChatPage: React.FC = () => {
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
+  // 新建对话
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createForm] = Form.useForm();
+
   // 加载对话列表
   const loadConversations = useCallback(async () => {
     setConvLoading(true);
@@ -125,6 +129,45 @@ const ClawChatPage: React.FC = () => {
     conv.title.toLowerCase().includes(searchKeyword.toLowerCase())
   );
 
+  // 创建新对话
+  const handleCreateConversation = async () => {
+    try {
+      const values = await createForm.validateFields();
+      const newConv = await clawApi.createConversation({
+        title: values.title || '新对话',
+        working_directory: values.working_directory,
+        llm_model: values.llm_model || 'claude-opus-4-6'
+      });
+      message.success('对话创建成功');
+      setCreateModalOpen(false);
+      createForm.resetFields();
+      await loadConversations();
+      setCurrentConvId(newConv.id);
+      setWorkingDirectory(newConv.working_directory);
+      setSelectedModel(newConv.llm_model);
+    } catch (error: any) {
+      if (error.errorFields) {
+        // 表单验证错误
+        return;
+      }
+      message.error(error.message || '创建对话失败');
+    }
+  };
+
+  // 删除对话
+  const handleDeleteConversation = async (convId: string) => {
+    try {
+      await clawApi.deleteConversation(convId);
+      message.success('对话已删除');
+      await loadConversations();
+      if (currentConvId === convId) {
+        setCurrentConvId(null);
+      }
+    } catch (error) {
+      message.error('删除对话失败');
+    }
+  };
+
   // 对话列表渲染
   const renderConversationList = () => (
     <>
@@ -152,7 +195,25 @@ const ClawChatPage: React.FC = () => {
           items={filteredConversations.map((conv) => ({
             key: conv.id,
             icon: <MessageOutlined />,
-            label: conv.title,
+            label: (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>{conv.title}</span>
+                <Popconfirm
+                  title="确定删除此对话？"
+                  onConfirm={(e) => {
+                    e?.stopPropagation();
+                    handleDeleteConversation(conv.id);
+                  }}
+                  okText="删除"
+                  cancelText="取消"
+                >
+                  <DeleteOutlined
+                    style={{ color: '#ff4d4f' }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </Popconfirm>
+              </div>
+            ),
             onClick: () => setCurrentConvId(conv.id)
           }))}
         />
@@ -182,7 +243,12 @@ const ClawChatPage: React.FC = () => {
           bodyStyle={{ flex: 1, overflow: 'auto', padding: 0 }}
           extra={
             <Tooltip title="新建对话">
-              <Button type="primary" icon={<PlusOutlined />} size="small">
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                size="small"
+                onClick={() => setCreateModalOpen(true)}
+              >
                 新建
               </Button>
             </Tooltip>
@@ -260,6 +326,55 @@ const ClawChatPage: React.FC = () => {
           </div>
         </div>
       </Card>
+
+      {/* 新建对话 Modal */}
+      <Modal
+        title="新建对话"
+        open={createModalOpen}
+        onOk={handleCreateConversation}
+        onCancel={() => {
+          setCreateModalOpen(false);
+          createForm.resetFields();
+        }}
+        okText="创建"
+        cancelText="取消"
+      >
+        <Form
+          form={createForm}
+          layout="vertical"
+          initialValues={{
+            llm_model: 'claude-opus-4-6'
+          }}
+        >
+          <Form.Item
+            label="对话标题"
+            name="title"
+          >
+            <Input placeholder="可选，默认为'新对话'" />
+          </Form.Item>
+          <Form.Item
+            label="工作目录"
+            name="working_directory"
+            rules={[{ required: true, message: '请输入工作目录' }]}
+          >
+            <Input
+              prefix={<FolderOutlined />}
+              placeholder="例如：C:\Users\YourName\Projects"
+            />
+          </Form.Item>
+          <Form.Item
+            label="LLM 模型"
+            name="llm_model"
+          >
+            <Select
+              options={models.map((m) => ({
+                label: m.name,
+                value: m.model_id
+              }))}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };
