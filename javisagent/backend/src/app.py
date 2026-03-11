@@ -1,12 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.models import Base, engine
+# 确保所有模型都被导入
+from src.models.claw import ClawConversation, ClawMessage, ClawToolCall
+from src.models.task import Task
+from src.models.knowledge import KnowledgeBase, KBDocument, Conversation, Message
+
 from src.routes import document
 from src.routes.translate import clone_router, ws_router
 from src.routes.knowledge import kb_router, documents_router, chat_router, graph_router
 from src.routes.claw import conversations_router, chat_router as claw_chat_router
+from src.routes.claw.prompts import router as claw_prompts_router
 
-# 创建数据库表
+# 创建数据库表（在所有模型导入之后）
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -34,6 +40,7 @@ app.include_router(chat_router)
 app.include_router(graph_router)
 app.include_router(conversations_router)
 app.include_router(claw_chat_router)
+app.include_router(claw_prompts_router, prefix="/api/claw", tags=["claw-prompts"])
 
 @app.get('/')
 async def root():
