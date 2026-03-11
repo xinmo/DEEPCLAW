@@ -88,26 +88,111 @@ async def chat_event_generator(
         db.add(user_msg)
         db.commit()
 
-        # 创建 Agent
+        # 创建 Agent，传递自定义提示词
         agent = create_claw_agent(
             working_directory=conversation.working_directory,
             llm_model=conversation.llm_model,
-            conversation_id=str(conv_id)
+            conversation_id=str(conv_id),
+            custom_system_prompt=conversation.system_prompt
         )
 
         # 流式执行 Agent
         assistant_content = ""
         tool_calls_data = []
 
-        # TODO: 实现 Agent 流式执行逻辑
-        # 这里先返回一个简单的响应
-        yield f"data: {json.dumps({'type': 'text', 'content': '收到消息，Agent 集成进行中...'})}\n\n"
+        # 准备输入消息
+        input_data = {
+            "messages": [{"role": "user", "content": user_message}]
+        }
+
+        # 使用 astream 流式执行
+        logger.info(f"Starting agent stream for conversation {conv_id}")
+        async for chunk in agent.astream(input_data, stream_mode=["messages", "updates"]):
+            logger.info(f"Received chunk: {type(chunk)}, {chunk}")
+            # chunk 是元组格式: (stream_mode, data)
+            if isinstance(chunk, tuple) and len(chunk) >= 2:
+                stream_mode, data = chunk[0], chunk[1]
+                logger.info(f"Stream mode: {stream_mode}, data type: {type(data)}")
+
+                # 处理消息流
+                if stream_mode == "messages":
+                    # data 是单个消息
+                    message = data
+                    logger.info(f"Message: {message}, has content: {hasattr(message, 'content')}")
+                    # AI 消息内容
+                    if hasattr(message, "content") and message.content:
+                        content = message.content
+                        assistant_content += content
+                        logger.info(f"Yielding text content: {content[:100]}")
+                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+
+                    # 工具调用
+                    if hasattr(message, "tool_calls") and message.tool_calls:
+                        for tool_call in message.tool_calls:
+                            tool_data = {
+                                "id": tool_call.get("id", ""),
+                                "name": tool_call.get("name", ""),
+                                "args": tool_call.get("args", {})
+                            }
+                            tool_calls_data.append(tool_data)
+                            # 前端期望的格式
+                            yield f"data: {json.dumps({
+                                'type': 'tool_call',
+                                'tool_id': tool_data['id'],
+                                'tool_name': tool_data['name'],
+                                'tool_input': tool_data['args']
+                            })}\n\n"
+
+                # 处理更新流（包含模型响应和工具结果）
+                elif stream_mode == "updates":
+                    # 检查是否是模型响应
+                    if isinstance(data, dict) and "model" in data:
+                        model_data = data["model"]
+                        if isinstance(model_data, dict) and "messages" in model_data:
+                            for msg in model_data["messages"]:
+                                # AI 消息内容
+                                if hasattr(msg, "content") and msg.content:
+                                    content = msg.content
+                                    assistant_content += content
+                                    logger.info(f"Yielding text from updates: {content[:100]}")
+                                    yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+
+                                # 工具调用
+                                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                    for tool_call in msg.tool_calls:
+                                        tool_data = {
+                                            "id": tool_call.get("id", ""),
+                                            "name": tool_call.get("name", ""),
+                                            "args": tool_call.get("args", {})
+                                        }
+                                        tool_calls_data.append(tool_data)
+                                        yield f"data: {json.dumps({
+                                            'type': 'tool_call',
+                                            'tool_id': tool_data['id'],
+                                            'tool_name': tool_data['name'],
+                                            'tool_input': tool_data['args']
+                                        })}\n\n"
+
+                    # data 是 (node_name, node_state) 元组 - 工具结果
+                    elif isinstance(data, tuple) and len(data) >= 2:
+                        node_name, node_state = data[0], data[1]
+                        if isinstance(node_state, dict) and "messages" in node_state:
+                            for msg in node_state["messages"]:
+                                # 工具结果
+                                if hasattr(msg, "name") and msg.name:
+                                    # 前端期望的格式
+                                    yield f"data: {json.dumps({
+                                        'type': 'tool_result',
+                                        'tool_name': msg.name,
+                                        'status': 'success',
+                                        'output': str(msg.content)[:500]
+                                    })}\n\n"
 
         # 保存 Assistant 消息
         assistant_msg = ClawMessage(
             conversation_id=str(conv_id),
             role=MessageRole.ASSISTANT,
-            content=assistant_content or "Agent 响应",
+            content=assistant_content or "Agent 已完成任务",
             extra_data={"tool_calls": tool_calls_data}
         )
         db.add(assistant_msg)
