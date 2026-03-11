@@ -1,28 +1,28 @@
 import api from './api';
 
-export interface PromptInfo {
+export type PromptInfo = {
   id: string;
   name: string;
   description: string;
 }
 
-export interface PromptDetail {
+export type PromptDetail = {
   id: string;
   name: string;
   content: string;
   default_content: string;
 }
 
-export interface PromptUpdateRequest {
+export type PromptUpdateRequest = {
   content: string;
 }
 
-export interface PromptUpdateResponse {
+export type PromptUpdateResponse = {
   success: boolean;
   message: string;
 }
 
-export interface PromptResetResponse {
+export type PromptResetResponse = {
   success: boolean;
   content: string;
 }
