@@ -1,4 +1,12 @@
-import api from './api';
+import axios from 'axios';
+
+const apiClient = axios.create({
+  baseURL: '/api',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  timeout: 30000,
+});
 
 export type PromptInfo = {
   id: string;
@@ -30,25 +38,25 @@ export type PromptResetResponse = {
 export const promptApi = {
   // 获取提示词列表
   getPrompts: async (): Promise<{ prompts: PromptInfo[] }> => {
-    const response = await api.get('/claw/prompts');
+    const response = await apiClient.get('/claw/prompts');
     return response.data;
   },
 
   // 获取提示词详情
   getPromptDetail: async (id: string): Promise<PromptDetail> => {
-    const response = await api.get(`/claw/prompts/${id}`);
+    const response = await apiClient.get(`/claw/prompts/${id}`);
     return response.data;
   },
 
   // 更新提示词
   updatePrompt: async (id: string, content: string): Promise<PromptUpdateResponse> => {
-    const response = await api.put(`/claw/prompts/${id}`, { content });
+    const response = await apiClient.put(`/claw/prompts/${id}`, { content });
     return response.data;
   },
 
   // 重置提示词
   resetPrompt: async (id: string): Promise<PromptResetResponse> => {
-    const response = await api.post(`/claw/prompts/${id}/reset`);
+    const response = await apiClient.post(`/claw/prompts/${id}/reset`);
     return response.data;
   },
 };

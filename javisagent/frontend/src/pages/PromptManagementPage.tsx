@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Layout, Menu, Input, Button, message, Space, Typography } from 'antd';
-import { promptApi, PromptInfo, PromptDetail } from '../services/promptApi';
+import { promptApi, type PromptInfo, type PromptDetail } from '../services/promptApi';
 
 const { Sider, Content } = Layout;
 const { TextArea } = Input;
