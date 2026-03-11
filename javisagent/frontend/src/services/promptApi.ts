@@ -1,0 +1,54 @@
+import api from './api';
+
+export interface PromptInfo {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface PromptDetail {
+  id: string;
+  name: string;
+  content: string;
+  default_content: string;
+}
+
+export interface PromptUpdateRequest {
+  content: string;
+}
+
+export interface PromptUpdateResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface PromptResetResponse {
+  success: boolean;
+  content: string;
+}
+
+export const promptApi = {
+  // 获取提示词列表
+  getPrompts: async (): Promise<{ prompts: PromptInfo[] }> => {
+    const response = await api.get('/claw/prompts');
+    return response.data;
+  },
+
+  // 获取提示词详情
+  getPromptDetail: async (id: string): Promise<PromptDetail> => {
+    const response = await api.get(`/claw/prompts/${id}`);
+    return response.data;
+  },
+
+  // 更新提示词
+  updatePrompt: async (id: string, content: string): Promise<PromptUpdateResponse> => {
+    const response = await api.put(`/claw/prompts/${id}`, { content });
+    return response.data;
+  },
+
+  // 重置提示词
+  resetPrompt: async (id: string): Promise<PromptResetResponse> => {
+    const response = await api.post(`/claw/prompts/${id}/reset`);
+    return response.data;
+  },
+};
