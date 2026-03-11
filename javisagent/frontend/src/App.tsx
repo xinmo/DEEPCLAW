@@ -5,6 +5,7 @@ import RealtimeTranslatePage from './pages/RealtimeTranslatePage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
 import KnowledgeChatPage from './pages/KnowledgeChatPage';
 import ClawChatPage from './pages/ClawChatPage';
+import PromptManagementPage from './pages/PromptManagementPage';
 import './styles/global.css';
 
 const App: React.FC = () => {
@@ -30,6 +31,8 @@ const App: React.FC = () => {
         return <KnowledgeChatPage />;
       case 'claw-chat':
         return <ClawChatPage />;
+      case 'prompt-management':
+        return <PromptManagementPage />;
       default:
         return <DocumentParsePage />;
     }

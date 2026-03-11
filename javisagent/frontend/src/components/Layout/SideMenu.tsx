@@ -90,6 +90,11 @@ const SideMenu: React.FC<SideMenuProps> = ({ onMenuSelect, selectedKey = 'docume
                 key: 'claw-chat',
                 label: collapsed ? '' : '对话龙虾',
                 icon: <MessageSquare size={16} />
+              },
+              {
+                key: 'prompt-management',
+                label: collapsed ? '' : '提示词管理',
+                icon: <FileText size={16} />
               }
             ]
           },
