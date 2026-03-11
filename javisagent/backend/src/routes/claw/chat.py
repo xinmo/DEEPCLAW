@@ -108,22 +108,18 @@ async def chat_event_generator(
         # 使用 astream 流式执行
         logger.info(f"Starting agent stream for conversation {conv_id}")
         async for chunk in agent.astream(input_data, stream_mode=["messages", "updates"]):
-            logger.info(f"Received chunk: {type(chunk)}, {chunk}")
             # chunk 是元组格式: (stream_mode, data)
             if isinstance(chunk, tuple) and len(chunk) >= 2:
                 stream_mode, data = chunk[0], chunk[1]
-                logger.info(f"Stream mode: {stream_mode}, data type: {type(data)}")
 
                 # 处理消息流
                 if stream_mode == "messages":
                     # data 是单个消息
                     message = data
-                    logger.info(f"Message: {message}, has content: {hasattr(message, 'content')}")
                     # AI 消息内容
                     if hasattr(message, "content") and message.content:
                         content = message.content
                         assistant_content += content
-                        logger.info(f"Yielding text content: {content[:100]}")
                         yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
 
                     # 工具调用
