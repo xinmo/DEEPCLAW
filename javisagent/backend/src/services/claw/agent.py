@@ -1,13 +1,129 @@
 import os
+import sys
+from pathlib import Path
 from typing import Optional
+
+LOCAL_DEEPAGENTS_ROOT = Path(__file__).resolve().parents[4] / "libs" / "deepagents"
+if LOCAL_DEEPAGENTS_ROOT.exists():
+    local_deepagents = str(LOCAL_DEEPAGENTS_ROOT)
+    if local_deepagents not in sys.path:
+        sys.path.insert(0, local_deepagents)
+
+LOCAL_CLI_ROOT = Path(__file__).resolve().parents[4] / "libs" / "cli"
+if LOCAL_CLI_ROOT.exists():
+    local_cli = str(LOCAL_CLI_ROOT)
+    if local_cli not in sys.path:
+        sys.path.insert(0, local_cli)
+
 from deepagents import create_deep_agent
+from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.local_shell import LocalShellBackend
+from deepagents.backends.protocol import EditResult, FileUploadResponse, WriteResult
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 import logging
+from langgraph.checkpoint.memory import InMemorySaver
 
+from .local_context import ClawLocalContextMiddleware
+from .skill_registry import get_enabled_skill_sources
 from .tools import web_search, fetch_url
 
 logger = logging.getLogger(__name__)
+CLAW_CHECKPOINTER = InMemorySaver()
+
+CLAW_USER_HOME = Path.home()
+CLAW_MEMORY_DIR = CLAW_USER_HOME / ".memory"
+CLAW_MEMORY_FILE = CLAW_MEMORY_DIR / "AGENTS.md"
+CLAW_SKILLS_DIR = CLAW_USER_HOME / ".agents" / "skills"
+CLAW_CONVERSATION_HISTORY_DIR = CLAW_USER_HOME / ".conversation_history"
+CLAW_MEMORY_SOURCE = "/memory/AGENTS.md"
+
+
+class ReadOnlyFilesystemBackend(FilesystemBackend):
+    """Filesystem backend that allows reads but blocks mutations."""
+
+    @staticmethod
+    def _read_only_error(file_path: str) -> str:
+        return f"permission_denied: '{file_path}' is read-only"
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        del content
+        return WriteResult(error=self._read_only_error(file_path))
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        del content
+        return WriteResult(error=self._read_only_error(file_path))
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        del old_string, new_string, replace_all
+        return EditResult(error=self._read_only_error(file_path))
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        del old_string, new_string, replace_all
+        return EditResult(error=self._read_only_error(file_path))
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return [FileUploadResponse(path=path, error="permission_denied") for path, _ in files]
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return self.upload_files(files)
+
+
+def ensure_claw_global_storage() -> None:
+    """Create the global user-level storage locations Claw relies on."""
+    CLAW_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    CLAW_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    CLAW_CONVERSATION_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not CLAW_MEMORY_FILE.exists():
+        CLAW_MEMORY_FILE.write_text(
+            "# Claw Global Memory\n\n"
+            "Persistent instructions and learned preferences shared across Claw conversations.\n",
+            encoding="utf-8",
+        )
+
+
+def create_claw_backend(working_directory: str) -> tuple[LocalShellBackend, CompositeBackend]:
+    """Create the shell backend and routed composite backend used by Claw."""
+    ensure_claw_global_storage()
+
+    shell_backend = LocalShellBackend(
+        root_dir=working_directory,
+        virtual_mode=True,
+        inherit_env=True,
+    )
+    composite_backend = CompositeBackend(
+        default=shell_backend,
+        routes={
+            "/memory/": FilesystemBackend(
+                root_dir=CLAW_MEMORY_DIR,
+                virtual_mode=True,
+            ),
+            "/skills/": ReadOnlyFilesystemBackend(
+                root_dir=CLAW_SKILLS_DIR,
+                virtual_mode=True,
+            ),
+            "/conversation_history/": FilesystemBackend(
+                root_dir=CLAW_CONVERSATION_HISTORY_DIR,
+                virtual_mode=True,
+            ),
+        },
+    )
+    return shell_backend, composite_backend
 
 # 模型配置
 MODEL_CONFIGS = {
@@ -112,6 +228,8 @@ SYSTEM_PROMPT_TEMPLATE = """# Deep Agent - 编程助手
 - 搜索文件内容
 
 始终使用以 / 开头的绝对路径。
+- 文件工具使用的是以当前工作目录为根的虚拟路径，不是 Windows 原生盘符路径。
+- 如果工作目录是 `C:\\Users\\WLX\\Desktop\\testclaw`，那么 `/` 就对应这个目录；`project_analysis.md` 应写成 `/project_analysis.md`，不要写成 `/c/Users/WLX/Desktop/testclaw/project_analysis.md`。
 
 ### web_search
 
@@ -228,7 +346,9 @@ def create_claw_agent(
     working_directory: str,
     llm_model: str = "claude-opus-4-6",
     conversation_id: Optional[str] = None,
-    custom_system_prompt: Optional[str] = None
+    custom_system_prompt: Optional[str] = None,
+    prompt_overrides: Optional[dict[str, str]] = None,
+    turn_instruction: Optional[str] = None,
 ):
     """
     创建 Claw Deep Agent 实例
@@ -238,6 +358,7 @@ def create_claw_agent(
         llm_model: LLM 模型名称
         conversation_id: 对话 ID（用于会话持久化）
         custom_system_prompt: 自定义系统提示词（可选）
+        prompt_overrides: DeepAgents 内置提示词覆盖项（可选）
 
     Returns:
         Deep Agent 实例
@@ -257,6 +378,8 @@ def create_claw_agent(
         system_prompt = system_prompt_template.format(
             working_directory=working_directory
         )
+        if turn_instruction:
+            system_prompt = f"{system_prompt}\n\n{turn_instruction.strip()}"
 
         # 创建 LLM 实例
         model_config = MODEL_CONFIGS.get(llm_model)
@@ -293,6 +416,24 @@ def create_claw_agent(
         else:
             logger.warning("TAVILY_API_KEY not set, web_search tool disabled")
 
+        from .prompt_registry import get_deep_agent_prompt_overrides
+
+        deep_agent_prompt_overrides = (
+            prompt_overrides if prompt_overrides is not None else get_deep_agent_prompt_overrides()
+        )
+        enabled_skill_sources = get_enabled_skill_sources()
+        shell_backend, backend = create_claw_backend(working_directory)
+        agent_middleware = [
+            ClawLocalContextMiddleware(backend=shell_backend),
+            create_summarization_tool_middleware(
+                llm,
+                backend,
+                system_prompt=deep_agent_prompt_overrides.get(
+                    "summarization_tool_system_prompt"
+                ),
+            ),
+        ]
+
         # 创建 Agent
         # Deep Agent 内置了文件系统、Shell、规划和子智能体功能
         agent = create_deep_agent(
@@ -300,6 +441,12 @@ def create_claw_agent(
             model=llm,
             system_prompt=system_prompt,
             tools=tools,
+            backend=backend,
+            memory=[CLAW_MEMORY_SOURCE],
+            skills=enabled_skill_sources or None,
+            middleware=agent_middleware,
+            checkpointer=CLAW_CHECKPOINTER,
+            prompt_overrides=deep_agent_prompt_overrides,
         )
 
         logger.info(f"Created Claw agent for directory: {working_directory}")

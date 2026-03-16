@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from src.models import get_db
-from src.models.claw import ClawConversation
+from src.models.claw import ClawConversation, ClawConversationPromptSnapshot
 from src.schemas.claw import (
     ConversationCreate,
     ConversationUpdate,
@@ -17,7 +17,7 @@ from src.schemas.claw import (
     ModelsResponse
 )
 from src.services.claw import validate_working_directory
-from .prompts import get_current_system_prompt
+from src.services.claw.prompt_registry import get_current_prompt_bundle
 
 router = APIRouter(prefix="/api/claw", tags=["claw"])
 
@@ -33,8 +33,8 @@ async def create_conversation(
     if not valid:
         raise HTTPException(status_code=400, detail=f"无效的工作目录: {reason}")
 
-    # 读取当前系统提示词
-    current_prompt = get_current_system_prompt()
+    current_prompt_bundle = get_current_prompt_bundle()
+    current_prompt = current_prompt_bundle["system_prompt"]
 
     # 创建对话
     conversation = ClawConversation(
@@ -42,6 +42,9 @@ async def create_conversation(
         working_directory=data.working_directory,
         llm_model=data.llm_model,
         system_prompt=current_prompt
+    )
+    conversation.prompt_snapshot = ClawConversationPromptSnapshot(
+        prompt_bundle=current_prompt_bundle
     )
     db.add(conversation)
     db.commit()

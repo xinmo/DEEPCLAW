@@ -2,9 +2,8 @@ from pydantic_settings import BaseSettings
 from functools import lru_cache
 
 class KnowledgeSettings(BaseSettings):
-    # Milvus
-    milvus_host: str = "localhost"
-    milvus_port: int = 19530
+    # ChromaDB - 本地持久化存储 (Windows 兼容)
+    chroma_persist_dir: str = "./chroma_data"
 
     # OpenAI
     openai_api_key: str = ""
@@ -30,7 +29,7 @@ class KnowledgeSettings(BaseSettings):
     chunk_size: int = 500
     chunk_overlap: int = 100
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "allow"}
 
 @lru_cache
 def get_knowledge_settings() -> KnowledgeSettings:

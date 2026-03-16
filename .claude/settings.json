@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install docx-preview)",
+      "Bash(npm run build)",
+      "Bash(pip install jieba pytest pytest-asyncio -q)",
+      "Bash(D:/Software/Python/python.exe -m pip install jieba pytest pytest-asyncio -q)",
+      "Bash(D:/Software/Python/python.exe -m pytest tests/test_rag_strategies.py -v --tb=short)",
+      "Bash(D:/Software/Python/python.exe -m py_compile src/services/knowledge/rag_strategies.py src/services/knowledge/retriever.py src/services/knowledge/document_processor.py src/routes/knowledge/chat.py)",
+      "Bash(pip install langchain-openai langchain-anthropic jieba -q)",
+      "Bash(npx vite build)",
+      "WebFetch(domain:help.aliyun.com)"
+    ]
+  }
+}

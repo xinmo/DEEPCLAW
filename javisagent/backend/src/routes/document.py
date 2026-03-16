@@ -1,22 +1,52 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Body
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import uuid
 import os
 from typing import Optional, List
 
-from models import get_db, Task, TaskStatus
-from schemas import UploadResponse, ParseResponse, TaskStatusResponse, Task as TaskSchema, ParseRequest, ExtractProgress
-from utils.file_handler import save_uploaded_file, get_file_path
-from services.mineru import mineru_client
+from src.models import get_db, Task, TaskStatus
+from src.schemas import UploadResponse, ParseResponse, TaskStatusResponse, Task as TaskSchema, ParseRequest, ExtractProgress
+from src.utils.file_handler import save_uploaded_file, get_file_path
+from src.services.mineru import mineru_client
 
 router = APIRouter(prefix='/api/document', tags=['document'])
 
 # HTML 相关扩展名
 HTML_EXTENSIONS = {'.html', '.htm'}
+# 纯文本扩展名（不需要 MinerU 解析）
+TEXT_EXTENSIONS = {'.txt', '.md', '.json'}
+
+# 文件扩展名到 MIME 类型的映射
+MIME_TYPES = {
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.json': 'application/json',
+    '.html': 'text/html',
+    '.htm': 'text/html',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+}
 
 def _is_html_file(filename: str) -> bool:
     ext = os.path.splitext(filename)[1].lower()
     return ext in HTML_EXTENSIONS
+
+def _is_text_file(filename: str) -> bool:
+    """判断是否为纯文本文件（不需要 MinerU 解析）"""
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in TEXT_EXTENSIONS
 
 def _is_html_url(url: str) -> bool:
     """判断 URL 是否应使用 MinerU-HTML 模型"""
@@ -54,7 +84,31 @@ async def parse_document(request: ParseRequest, db: Session = Depends(get_db)):
             if not file_path:
                 raise HTTPException(status_code=404, detail='File not found')
 
-            filename = os.path.basename(file_path)
+            # 优先使用传入的原始文件名，否则从路径提取（兼容旧数据）
+            filename = request.file_name or os.path.basename(file_path)
+
+            # 纯文本文件直接读取，不需要 MinerU 解析
+            if _is_text_file(filename):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                except UnicodeDecodeError:
+                    with open(file_path, 'r', encoding='gbk') as f:
+                        content = f.read()
+
+                task = Task(
+                    id=task_id,
+                    name=filename,
+                    status=TaskStatus.COMPLETED,
+                    file_id=request.file_id,
+                    file_name=filename,
+                    result=content
+                )
+                db.add(task)
+                db.commit()
+                db.refresh(task)
+                return ParseResponse(task_id=task_id)
+
             model_version = 'MinerU-HTML' if _is_html_file(filename) else 'vlm'
 
             # 1. 申请上传链接
@@ -191,6 +245,25 @@ def _handle_task_result(task: Task, data: dict, db: Session):
     return progress
 
 
+@router.delete('/task/{task_id}')
+async def delete_task(task_id: str, db: Session = Depends(get_db)):
+    """删除任务"""
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(status_code=404, detail='Task not found')
+        # 删除关联的本地文件
+        if task.file_id:
+            from utils.file_handler import delete_file
+            delete_file(task.file_id)
+        db.delete(task)
+        db.commit()
+        return {'message': 'Task deleted'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Failed to delete task: {str(e)}')
+
 @router.get('/tasks', response_model=List[TaskSchema])
 async def get_tasks(db: Session = Depends(get_db)):
     """获取任务列表"""
@@ -216,3 +289,26 @@ async def create_task(db: Session = Depends(get_db)):
         return task
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Failed to create task: {str(e)}')
+
+@router.get('/file/{file_id}')
+async def get_file(file_id: str):
+    """
+    根据文件 ID 获取文件内容
+    用于前端预览历史任务的文件
+    """
+    file_path = get_file_path(file_id)
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail='File not found')
+    
+    # 获取文件扩展名并设置 Content-Type
+    ext = os.path.splitext(file_path)[1].lower()
+    media_type = MIME_TYPES.get(ext, 'application/octet-stream')
+    
+    # 获取文件名
+    filename = os.path.basename(file_path)
+    
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=filename
+    )

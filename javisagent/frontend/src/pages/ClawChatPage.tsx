@@ -1,428 +1,684 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useReducer, useRef, useState } from "react";
 import {
-  Card,
-  Select,
-  Input,
-  Button,
   Avatar,
-  Empty,
-  Spin,
-  message,
-  Menu,
-  Popconfirm,
-  Typography,
-  Tooltip,
+  Button,
+  Card,
   Drawer,
-} from 'antd';
+  Empty,
+  Form,
+  Input,
+  Menu,
+  Modal,
+  Popconfirm,
+  Select,
+  Spin,
+  Tag,
+  Tooltip,
+  message,
+} from "antd";
 import {
+  ArrowDownOutlined,
+  CloseCircleOutlined,
+  DeleteOutlined,
+  FolderOutlined,
+  MenuOutlined,
+  MessageOutlined,
+  PlusOutlined,
+  SearchOutlined,
   SendOutlined,
   UserOutlined,
-  RobotOutlined,
-  FolderOutlined,
-  PlusOutlined,
-  DeleteOutlined,
-  MessageOutlined,
-  EditOutlined,
-  CopyOutlined,
-  SearchOutlined,
-  MenuOutlined,
-  CheckOutlined,
-  CloseOutlined,
-} from '@ant-design/icons';
-import { clawApi } from '../services/clawApi';
-import type {
-  ClawConversation,
-  ClawMessage,
-  ModelInfo,
-  SSEEvent,
-  ToolCall,
-  SubAgent,
-  PlanningTask,
-} from '../types/claw';
-import ToolCallCard from '../components/Claw/ToolCallCard';
-import SubAgentCard from '../components/Claw/SubAgentCard';
-import PlanningCard from '../components/Claw/PlanningCard';
+} from "@ant-design/icons";
+import ReactMarkdown from "react-markdown";
 
-// 聊天消息显示类型（包含流式状态）
-interface ChatMessage {
-  id?: string;
-  role: 'user' | 'assistant';
-  content: string;
-  toolCalls?: ToolCall[];
-  subAgents?: SubAgent[];
-  planningTasks?: PlanningTask[];
-  isStreaming?: boolean;
+import DirectoryBrowser from "../components/Claw/DirectoryBrowser";
+import PlanningCard from "../components/Claw/PlanningCard";
+import ShellExecutionCard from "../components/Claw/ShellExecutionCard";
+import SubAgentCard from "../components/Claw/SubAgentCard";
+import ToolCallCard from "../components/Claw/ToolCallCard";
+import { clawApi } from "../services/clawApi";
+import type { ClawConversation, ClawSkillSummary, ModelInfo } from "../types/claw";
+import {
+  buildHistoryTimeline,
+  initialTimelineState,
+  mergeAdjacentAssistantBubbles,
+  timelineReducer,
+  type ChatTimelineItem,
+} from "./clawTimeline";
+
+const BOTTOM_LOCK_THRESHOLD = 96;
+const CHAT_VIEWPORT_HEIGHT = "calc(100vh - 96px)";
+const RESERVED_SLASH_COMMANDS = new Set([
+  "help",
+  "clear",
+  "compact",
+  "mcp",
+  "model",
+  "reload",
+  "remember",
+  "tokens",
+  "threads",
+  "trace",
+  "changelog",
+  "docs",
+  "feedback",
+  "version",
+  "quit",
+  "q",
+]);
+
+function normalizeSkillReference(value: string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+  return value.trim().toLowerCase().replace(/^\/+/, "");
+}
+
+function getPreferredSkillAlias(skill: ClawSkillSummary) {
+  const aliases = Array.isArray(skill.aliases) ? skill.aliases : [];
+  return aliases[0] || normalizeSkillReference(skill.declared_name) || normalizeSkillReference(skill.name) || skill.name;
+}
+
+function getSlashDraft(value: string) {
+  const trimmedValue = value.trim();
+  if (!trimmedValue.startsWith("/") || trimmedValue.startsWith("//") || trimmedValue.includes("\n")) {
+    return null;
+  }
+
+  const withoutSlash = trimmedValue.slice(1);
+  const whitespaceIndex = withoutSlash.search(/\s/);
+  const query = whitespaceIndex === -1 ? withoutSlash : withoutSlash.slice(0, whitespaceIndex);
+  const remainder = whitespaceIndex === -1 ? "" : withoutSlash.slice(whitespaceIndex).trimStart();
+  return {
+    query: normalizeSkillReference(query),
+    remainder,
+  };
+}
+
+function findExactSkillMatches(skills: ClawSkillSummary[], reference: string) {
+  const normalizedReference = normalizeSkillReference(reference);
+  if (!normalizedReference || RESERVED_SLASH_COMMANDS.has(normalizedReference)) {
+    return [];
+  }
+
+  const exactNameMatches = skills.filter(
+    (skill) => normalizeSkillReference(skill.name) === normalizedReference,
+  );
+  if (exactNameMatches.length > 0) {
+    return exactNameMatches;
+  }
+
+  const exactDeclaredMatches = skills.filter(
+    (skill) => normalizeSkillReference(skill.declared_name) === normalizedReference,
+  );
+  if (exactDeclaredMatches.length > 0) {
+    return exactDeclaredMatches;
+  }
+
+  return skills.filter((skill) => {
+    const aliases = Array.isArray(skill.aliases) ? skill.aliases : [];
+    return aliases.includes(normalizedReference);
+  });
 }
 
 const ClawChatPage: React.FC = () => {
-  // 对话状态
   const [conversations, setConversations] = useState<ClawConversation[]>([]);
-  const [currentConvId, setCurrentConvId] = useState<string | null>(() => {
-    return localStorage.getItem('claw_chat_conv_id');
-  });
+  const [currentConvId, setCurrentConvId] = useState<string | null>(() =>
+    localStorage.getItem("claw_chat_conv_id"),
+  );
   const [convLoading, setConvLoading] = useState(false);
-
-  // 消息状态
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [inputValue, setInputValue] = useState('');
-  const [sending, setSending] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
-
-  // 配置状态
-  const [workingDirectory, setWorkingDirectory] = useState('');
-  const [selectedModel, setSelectedModel] = useState('claude-opus-4-6');
+  const [sending, setSending] = useState(false);
+  const [inputValue, setInputValue] = useState("");
+  const [availableSkills, setAvailableSkills] = useState<ClawSkillSummary[]>([]);
+  const [selectedSkill, setSelectedSkill] = useState<ClawSkillSummary | null>(null);
+  const [workingDirectory, setWorkingDirectory] = useState("");
+  const [selectedModel, setSelectedModel] = useState("deepseek-chat");
   const [models, setModels] = useState<ModelInfo[]>([]);
-
-  // 编辑状态
-  const [editingConvId, setEditingConvId] = useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = useState('');
-
-  // 搜索
-  const [searchKeyword, setSearchKeyword] = useState('');
-
-  // 响应式
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const deferredSearchKeyword = useDeferredValue(searchKeyword);
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-
-  // 新建对话
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [directoryBrowserOpen, setDirectoryBrowserOpen] = useState(false);
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+  const [pendingMessageCount, setPendingMessageCount] = useState(0);
   const [createForm] = Form.useForm();
+  const [timelineState, dispatchTimeline] = useReducer(timelineReducer, initialTimelineState);
+  const timelineContainerRef = useRef<HTMLDivElement | null>(null);
+  const activeRequestControllerRef = useRef<AbortController | null>(null);
+  const abortRequestedRef = useRef(false);
+  const shouldSnapToBottomRef = useRef(true);
+  const lastSeenItemCountRef = useRef(0);
+  const displayTimelineItems = mergeAdjacentAssistantBubbles(timelineState.items);
+  const timelineItemCount = displayTimelineItems.length;
 
-  // 加载对话列表
+  const currentConversation =
+    conversations.find((conversation) => conversation.id === currentConvId) || null;
+  const filteredConversations = conversations.filter((conversation) =>
+    conversation.title.toLowerCase().includes(deferredSearchKeyword.toLowerCase()),
+  );
+  const slashDraft = selectedSkill ? null : getSlashDraft(inputValue);
+  const slashSuggestions =
+    slashDraft && !slashDraft.remainder
+      ? availableSkills
+          .filter((skill) => {
+            if (!slashDraft.query) {
+              return true;
+            }
+            const prefix = slashDraft.query;
+            return (
+              normalizeSkillReference(skill.name).startsWith(prefix) ||
+              normalizeSkillReference(skill.declared_name).startsWith(prefix) ||
+              (Array.isArray(skill.aliases) ? skill.aliases : []).some((alias) => alias.startsWith(prefix))
+            );
+          })
+          .slice(0, 8)
+      : [];
+
   const loadConversations = useCallback(async () => {
     setConvLoading(true);
     try {
-      const data = await clawApi.listConversations();
-      setConversations(data);
-    } catch (error) {
-      message.error('加载对话列表失败');
+      setConversations(await clawApi.listConversations());
+    } catch {
+      message.error("加载对话列表失败");
     } finally {
       setConvLoading(false);
     }
   }, []);
 
-  // 加载模型列表
   const loadModels = useCallback(async () => {
     try {
-      const data = await clawApi.listModels();
-      setModels(data);
-    } catch (error) {
-      message.error('加载模型列表失败');
+      setModels(await clawApi.listModels());
+    } catch {
+      message.error("加载模型列表失败");
     }
   }, []);
 
-  // 初始化
-  useEffect(() => {
-    loadConversations();
-    loadModels();
-  }, [loadConversations, loadModels]);
+  const loadSkills = useCallback(async () => {
+    try {
+      const data = await clawApi.listSkills();
+      setAvailableSkills(data.skills.filter((skill) => skill.enabled));
+      setSelectedSkill((current) => {
+        if (!current) {
+          return current;
+        }
+        return data.skills.find((skill) => skill.enabled && skill.name === current.name) || null;
+      });
+    } catch (error) {
+      console.error("Failed to load skills for slash suggestions", error);
+    }
+  }, []);
 
-  // 保存当前对话 ID
+  useEffect(() => {
+    void loadConversations();
+    void loadModels();
+    void loadSkills();
+  }, [loadConversations, loadModels, loadSkills]);
+
   useEffect(() => {
     if (currentConvId) {
-      localStorage.setItem('claw_chat_conv_id', currentConvId);
+      localStorage.setItem("claw_chat_conv_id", currentConvId);
     } else {
-      localStorage.removeItem('claw_chat_conv_id');
+      localStorage.removeItem("claw_chat_conv_id");
     }
   }, [currentConvId]);
 
-  // 响应式监听
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // 加载消息历史
+  useEffect(() => {
+    if (currentConversation) {
+      setWorkingDirectory(currentConversation.working_directory);
+      setSelectedModel(currentConversation.llm_model);
+    } else {
+      setWorkingDirectory("");
+      setSelectedModel("deepseek-chat");
+    }
+  }, [currentConversation]);
+
   useEffect(() => {
     if (!currentConvId) {
-      setMessages([]);
+      dispatchTimeline({ type: "reset", items: [] });
       return;
     }
 
     const loadMessages = async () => {
       setMessagesLoading(true);
       try {
-        const data = await clawApi.getMessages(currentConvId);
-        setMessages(data.map(msg => ({
-          id: msg.id,
-          role: msg.role,
-          content: msg.content,
-          isStreaming: false
-        })));
-      } catch (error) {
-        message.error('加载消息失败');
+        dispatchTimeline({
+          type: "reset",
+          items: buildHistoryTimeline(await clawApi.getMessages(currentConvId)),
+        });
+      } catch {
+        message.error("加载消息失败");
       } finally {
         setMessagesLoading(false);
       }
     };
 
-    loadMessages();
+    void loadMessages();
   }, [currentConvId]);
 
-  // 发送消息
+  useEffect(() => {
+    setIsPinnedToBottom(true);
+    setPendingMessageCount(0);
+    shouldSnapToBottomRef.current = true;
+    lastSeenItemCountRef.current = 0;
+    setSelectedSkill(null);
+  }, [currentConvId]);
+
+  const isNearBottom = useCallback((container: HTMLDivElement | null) => {
+    if (!container) {
+      return true;
+    }
+
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distanceFromBottom <= BOTTOM_LOCK_THRESHOLD;
+  }, []);
+
+  const acknowledgeLatest = useCallback((latestCount: number) => {
+    lastSeenItemCountRef.current = latestCount;
+    setPendingMessageCount(0);
+  }, []);
+
+  const scrollTimelineToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      const container = timelineContainerRef.current;
+      if (!container) {
+        return;
+      }
+
+      container.scrollTo({ top: container.scrollHeight, behavior });
+      setIsPinnedToBottom(true);
+      acknowledgeLatest(timelineItemCount);
+    },
+    [acknowledgeLatest, timelineItemCount],
+  );
+
+  useEffect(() => {
+    let frameId: number | null = null;
+
+    if (shouldSnapToBottomRef.current || isPinnedToBottom) {
+      shouldSnapToBottomRef.current = false;
+      frameId = window.requestAnimationFrame(() => {
+        scrollTimelineToBottom(sending ? "smooth" : "auto");
+      });
+    } else if (timelineItemCount > lastSeenItemCountRef.current) {
+      setPendingMessageCount(timelineItemCount - lastSeenItemCountRef.current);
+    } else if (sending) {
+      setPendingMessageCount((count) => Math.max(count, 1));
+    }
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [timelineState.items, timelineItemCount, isPinnedToBottom, scrollTimelineToBottom, sending]);
+
+  useEffect(() => () => {
+    activeRequestControllerRef.current?.abort();
+  }, []);
+
+  const handleTimelineScroll = useCallback(() => {
+    const container = timelineContainerRef.current;
+    const nextPinnedState = isNearBottom(container);
+
+    setIsPinnedToBottom((current) => (current === nextPinnedState ? current : nextPinnedState));
+
+    if (nextPinnedState) {
+      acknowledgeLatest(timelineItemCount);
+      shouldSnapToBottomRef.current = false;
+    }
+  }, [acknowledgeLatest, isNearBottom, timelineItemCount]);
+
+  const handleStopMessage = () => {
+    if (!sending) {
+      return;
+    }
+
+    abortRequestedRef.current = true;
+    activeRequestControllerRef.current?.abort();
+    activeRequestControllerRef.current = null;
+    dispatchTimeline({ type: "finalizeStream" });
+    setSending(false);
+    message.info("已终止当前回复");
+  };
+
+  const handleSelectSlashSkill = (skill: ClawSkillSummary) => {
+    setSelectedSkill(skill);
+    setInputValue(slashDraft?.remainder || "");
+  };
+
   const handleSendMessage = async () => {
-    if (!currentConvId || !inputValue.trim()) return;
+    if (!currentConvId || sending) {
+      return;
+    }
 
-    const userMessage = inputValue.trim();
-    setInputValue('');
+    let turnSkill = selectedSkill;
+    let userMessage = inputValue.trim();
+
+    if (!turnSkill && userMessage) {
+      const draft = getSlashDraft(userMessage);
+      if (draft) {
+        const exactMatches = findExactSkillMatches(availableSkills, draft.query);
+        if (exactMatches.length === 1) {
+          turnSkill = exactMatches[0];
+          if (!draft.remainder) {
+            setSelectedSkill(exactMatches[0]);
+            setInputValue("");
+            message.info(`已选择 /${getPreferredSkillAlias(exactMatches[0])}，请输入本轮消息内容。`);
+            return;
+          }
+          userMessage = draft.remainder;
+        }
+      }
+    }
+
+    if (!userMessage) {
+      return;
+    }
+    const controller = new AbortController();
+    abortRequestedRef.current = false;
+    activeRequestControllerRef.current = controller;
+    shouldSnapToBottomRef.current = true;
+    setInputValue("");
+    setSelectedSkill(null);
     setSending(true);
-
-    // 添加用户消息
-    const userMsg: ChatMessage = {
-      role: 'user',
+    dispatchTimeline({
+      type: "appendUser",
       content: userMessage,
-      isStreaming: false
-    };
-    setMessages(prev => [...prev, userMsg]);
-
-    // 添加 Assistant 占位消息
-    const assistantMsg: ChatMessage = {
-      role: 'assistant',
-      content: '',
-      isStreaming: true
-    };
-    setMessages(prev => [...prev, assistantMsg]);
+      selectedSkill: turnSkill ? getPreferredSkillAlias(turnSkill) : undefined,
+    });
+    dispatchTimeline({ type: "startAssistantTurn" });
 
     try {
-      let assistantContent = '';
-      const toolCalls: ToolCall[] = [];
-      const subAgents: SubAgent[] = [];
-      let planningTasks: PlanningTask[] = [];
-
       await clawApi.sendMessage(
         currentConvId,
-        { content: userMessage },
-        (event: SSEEvent) => {
-          if (event.type === 'text') {
-            assistantContent += event.content;
-            setMessages(prev => {
-              const newMessages = [...prev];
-              const lastMsg = newMessages[newMessages.length - 1];
-              if (lastMsg.role === 'assistant') {
-                lastMsg.content = assistantContent;
-              }
-              return newMessages;
-            });
-          } else if (event.type === 'tool_call') {
-            // 工具调用开始
-            const toolCall: ToolCall = {
-              id: event.tool_id || `tool_${Date.now()}`,
-              toolName: event.tool_name,
-              status: 'running',
-              input: event.tool_input
-            };
-            toolCalls.push(toolCall);
-            setMessages(prev => {
-              const newMessages = [...prev];
-              const lastMsg = newMessages[newMessages.length - 1];
-              if (lastMsg.role === 'assistant') {
-                lastMsg.toolCalls = [...toolCalls];
-              }
-              return newMessages;
-            });
-          } else if (event.type === 'tool_result') {
-            // 工具调用结果
-            const toolCall = toolCalls.find(t => t.toolName === event.tool_name);
-            if (toolCall) {
-              toolCall.status = event.status || 'success';
-              toolCall.output = event.output;
-              toolCall.duration = event.duration;
-              toolCall.error = event.error;
-              setMessages(prev => {
-                const newMessages = [...prev];
-                const lastMsg = newMessages[newMessages.length - 1];
-                if (lastMsg.role === 'assistant') {
-                  lastMsg.toolCalls = [...toolCalls];
-                }
-                return newMessages;
-              });
-            }
-          } else if (event.type === 'subagent_start') {
-            // 子智能体启动
-            const subAgent: SubAgent = {
-              id: event.agent_id,
-              name: event.agent_name,
-              task: event.task,
-              status: 'running',
-              progress: 0
-            };
-            subAgents.push(subAgent);
-            setMessages(prev => {
-              const newMessages = [...prev];
-              const lastMsg = newMessages[newMessages.length - 1];
-              if (lastMsg.role === 'assistant') {
-                lastMsg.subAgents = [...subAgents];
-              }
-              return newMessages;
-            });
-          } else if (event.type === 'subagent_progress') {
-            // 子智能体进度
-            const subAgent = subAgents.find(s => s.id === event.agent_id);
-            if (subAgent) {
-              subAgent.progress = event.progress;
-              setMessages(prev => {
-                const newMessages = [...prev];
-                const lastMsg = newMessages[newMessages.length - 1];
-                if (lastMsg.role === 'assistant') {
-                  lastMsg.subAgents = [...subAgents];
-                }
-                return newMessages;
-              });
-            }
-          } else if (event.type === 'subagent_complete') {
-            // 子智能体完成
-            const subAgent = subAgents.find(s => s.id === event.agent_id);
-            if (subAgent) {
-              subAgent.status = 'success';
-              subAgent.result = event.result;
-              subAgent.duration = event.duration;
-              setMessages(prev => {
-                const newMessages = [...prev];
-                const lastMsg = newMessages[newMessages.length - 1];
-                if (lastMsg.role === 'assistant') {
-                  lastMsg.subAgents = [...subAgents];
-                }
-                return newMessages;
-              });
-            }
-          } else if (event.type === 'planning') {
-            // 规划任务
-            planningTasks = event.tasks || [];
-            setMessages(prev => {
-              const newMessages = [...prev];
-              const lastMsg = newMessages[newMessages.length - 1];
-              if (lastMsg.role === 'assistant') {
-                lastMsg.planningTasks = [...planningTasks];
-              }
-              return newMessages;
-            });
-          } else if (event.type === 'done') {
-            setMessages(prev => {
-              const newMessages = [...prev];
-              const lastMsg = newMessages[newMessages.length - 1];
-              if (lastMsg.role === 'assistant') {
-                lastMsg.isStreaming = false;
-              }
-              return newMessages;
-            });
-          } else if (event.type === 'error') {
-            message.error(event.message || '发送消息失败');
+        { content: userMessage, selected_skill: turnSkill?.name },
+        (event) => {
+          dispatchTimeline({ type: "applyEvent", event });
+          if (event.type === "error") {
+            message.error(event.message || "对话流出错");
           }
         },
         (error) => {
-          message.error('连接失败: ' + error.message);
-        }
+          if (abortRequestedRef.current && error.name === "AbortError") {
+            return;
+          }
+          dispatchTimeline({ type: "finalizeStream" });
+          message.error(`连接失败: ${error.message}`);
+        },
+        controller.signal,
       );
-    } catch (error: any) {
-      message.error(error.message || '发送消息失败');
-      // 移除失败的 Assistant 消息
-      setMessages(prev => prev.slice(0, -1));
+    } catch (error) {
+      if (abortRequestedRef.current && error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+      dispatchTimeline({ type: "finalizeStream" });
+      message.error(error instanceof Error ? error.message : "发送消息失败");
     } finally {
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null;
+      }
+      abortRequestedRef.current = false;
       setSending(false);
     }
   };
 
-  // 过滤对话
-  const filteredConversations = conversations.filter((conv) =>
-    conv.title.toLowerCase().includes(searchKeyword.toLowerCase())
-  );
-
-  // 创建新对话
   const handleCreateConversation = async () => {
     try {
       const values = await createForm.validateFields();
-      const newConv = await clawApi.createConversation({
-        title: values.title || '新对话',
+      const conversation = await clawApi.createConversation({
+        title: values.title || "新对话",
         working_directory: values.working_directory,
-        llm_model: values.llm_model || 'claude-opus-4-6'
+        llm_model: values.llm_model || "deepseek-chat",
       });
-      message.success('对话创建成功');
+      message.success("对话创建成功");
       setCreateModalOpen(false);
       createForm.resetFields();
       await loadConversations();
-      setCurrentConvId(newConv.id);
-      setWorkingDirectory(newConv.working_directory);
-      setSelectedModel(newConv.llm_model);
-    } catch (error: any) {
-      if (error.errorFields) {
-        // 表单验证错误
+      setCurrentConvId(conversation.id);
+    } catch (error: unknown) {
+      if (typeof error === "object" && error && "errorFields" in error) {
         return;
       }
-      message.error(error.message || '创建对话失败');
+      message.error("创建对话失败");
     }
   };
 
-  // 删除对话
-  const handleDeleteConversation = async (convId: string) => {
-    try {
-      await clawApi.deleteConversation(convId);
-      message.success('对话已删除');
-      await loadConversations();
-      if (currentConvId === convId) {
-        setCurrentConvId(null);
+  const renderTimelineItem = (item: ChatTimelineItem) => {
+    if (item.kind === "bubble") {
+      const isUser = item.role === "user";
+      if (!isUser) {
+        return (
+          <div
+            key={item.id}
+            style={{
+              position: "relative",
+              marginBottom: 12,
+              paddingLeft: 74,
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: 58,
+                top: 8,
+                bottom: 0,
+                width: 1,
+                background: "rgba(82, 196, 26, 0.2)",
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                left: 54,
+                top: 7,
+                width: 9,
+                height: 9,
+                borderRadius: "50%",
+                background: "#52c41a",
+                boxShadow: "0 0 0 4px rgba(82, 196, 26, 0.12)",
+              }}
+            />
+            <div
+              style={{
+                color: "#262626",
+                minWidth: 0,
+                wordBreak: "break-word",
+              }}
+            >
+              {item.content ? (
+                <ReactMarkdown>{item.content}</ReactMarkdown>
+              ) : item.isStreaming ? (
+                <Spin size="small" />
+              ) : (
+                <span style={{ color: "#8c8c8c" }}>(empty message)</span>
+              )}
+            </div>
+          </div>
+        );
       }
-    } catch (error) {
-      message.error('删除对话失败');
+
+      return (
+        <div key={item.id} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <Avatar icon={<UserOutlined />} style={{ backgroundColor: "#1677ff", flexShrink: 0 }} />
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: "14px 16px",
+              borderRadius: 14,
+              background: "#f5f5f5",
+              boxShadow: "none",
+            }}
+          >
+            {item.selectedSkill ? (
+              <div style={{ marginBottom: 10 }}>
+                <Tag color="processing">{`Skill: /${item.selectedSkill}`}</Tag>
+              </div>
+            ) : null}
+            {item.content ? (
+              <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{item.content}</div>
+            ) : item.isStreaming ? (
+              <Spin size="small" />
+            ) : (
+              <span style={{ color: "#8c8c8c" }}>(empty message)</span>
+            )}
+          </div>
+        </div>
+      );
     }
+
+    const wrapperStyle = { paddingLeft: 52 };
+
+    if (item.kind === "tool") {
+      return (
+        <div key={item.id} style={wrapperStyle}>
+          <ToolCallCard
+            toolCall={{
+              id: item.toolId,
+              toolName: item.toolName,
+              status: item.status,
+              input: item.input,
+              output: item.output,
+              error: item.error,
+            }}
+          />
+        </div>
+      );
+    }
+
+    if (item.kind === "shell") {
+      return (
+        <div key={item.id} style={wrapperStyle}>
+          <ShellExecutionCard
+            title={item.title}
+            status={item.status}
+            command={item.command}
+            input={item.input}
+            stdout={item.stdout}
+            stderr={item.stderr}
+            exitCode={item.exitCode}
+          />
+        </div>
+      );
+    }
+
+    if (item.kind === "planning") {
+      if (item.todos.length === 0) {
+        return null;
+      }
+
+      return (
+        <div key={item.id} style={wrapperStyle}>
+          <PlanningCard title={item.title} status={item.status} todos={item.todos} />
+        </div>
+      );
+    }
+
+    return (
+      <div key={item.id} style={wrapperStyle}>
+        <SubAgentCard
+          title={item.title}
+          status={item.status}
+          toolId={item.toolId}
+          transcript={item.transcript}
+          result={item.result}
+        />
+      </div>
+    );
   };
 
-  // 对话列表渲染
   const renderConversationList = () => (
     <>
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0' }}>
+      <div style={{ padding: "8px 12px", borderBottom: "1px solid #f0f0f0" }}>
         <Input
           placeholder="搜索对话..."
-          prefix={<SearchOutlined style={{ color: '#999' }} />}
+          prefix={<SearchOutlined style={{ color: "#999" }} />}
           value={searchKeyword}
-          onChange={(e) => setSearchKeyword(e.target.value)}
+          onChange={(event) => setSearchKeyword(event.target.value)}
           allowClear
           size="small"
         />
       </div>
       {convLoading ? (
-        <div style={{ textAlign: 'center', padding: 24 }}>
+        <div style={{ textAlign: "center", padding: 24 }}>
           <Spin />
         </div>
       ) : filteredConversations.length === 0 ? (
-        <Empty description={searchKeyword ? '无匹配对话' : '暂无对话'} style={{ marginTop: 40 }} />
+        <Empty
+          description={searchKeyword ? "没有匹配的对话" : "暂无对话"}
+          style={{ marginTop: 40 }}
+        />
       ) : (
         <Menu
           mode="inline"
           selectedKeys={currentConvId ? [currentConvId] : []}
-          style={{ border: 'none' }}
-          items={filteredConversations.map((conv) => ({
-            key: conv.id,
+          style={{ border: "none" }}
+          items={filteredConversations.map((conversation) => ({
+            key: conversation.id,
             icon: <MessageOutlined />,
             label: (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>{conv.title}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>{conversation.title}</span>
                 <Popconfirm
-                  title="确定删除此对话？"
-                  onConfirm={(e) => {
-                    e?.stopPropagation();
-                    handleDeleteConversation(conv.id);
+                  title="确定删除这个对话？"
+                  onConfirm={(event) => {
+                    event?.stopPropagation();
+                    void clawApi
+                      .deleteConversation(conversation.id)
+                      .then(async () => {
+                        message.success("对话已删除");
+                        await loadConversations();
+                        if (currentConvId === conversation.id) {
+                          setCurrentConvId(null);
+                        }
+                      })
+                      .catch(() => message.error("删除对话失败"));
                   }}
                   okText="删除"
                   cancelText="取消"
                 >
                   <DeleteOutlined
-                    style={{ color: '#ff4d4f' }}
-                    onClick={(e) => e.stopPropagation()}
+                    style={{ color: "#ff4d4f" }}
+                    onClick={(event) => event.stopPropagation()}
                   />
                 </Popconfirm>
               </div>
             ),
-            onClick: () => setCurrentConvId(conv.id)
+            onClick: () => setCurrentConvId(conversation.id),
           }))}
         />
       )}
     </>
   );
 
+  const showJumpToLatest =
+    Boolean(currentConvId) && !isPinnedToBottom && (pendingMessageCount > 0 || sending);
+  const showComposerStatus = sending || showJumpToLatest;
+  const composerStatusText = sending
+    ? "\u6b63\u5728\u751f\u6210\u56de\u590d\uff0c\u8f93\u5165\u6846\u4f1a\u4fdd\u6301\u56fa\u5b9a\u3002"
+    : pendingMessageCount > 0
+      ? `${pendingMessageCount} \u6761\u65b0\u6d88\u606f\uff0c\u70b9\u51fb\u53f3\u4e0b\u89d2\u56de\u5230\u5e95\u90e8\u3002`
+      : "\u6709\u65b0\u7684\u6d41\u5f0f\u5185\u5bb9\uff0c\u70b9\u51fb\u53f3\u4e0b\u89d2\u56de\u5230\u5e95\u90e8\u3002";
+
   return (
-    <div style={{ display: 'flex', height: '100%', padding: 16, gap: 16 }}>
-      {/* 移动端抽屉 */}
+    <div
+      style={{
+        display: "flex",
+        height: CHAT_VIEWPORT_HEIGHT,
+        minHeight: 0,
+        padding: 16,
+        gap: 16,
+        overflow: "hidden",
+      }}
+    >
       <Drawer
         title="对话历史"
         placement="left"
@@ -434,13 +690,12 @@ const ClawChatPage: React.FC = () => {
         {renderConversationList()}
       </Drawer>
 
-      {/* 左侧：对话列表（桌面端） */}
       {!isMobile && (
         <Card
           title="对话历史"
-          style={{ width: 280, display: 'flex', flexDirection: 'column' }}
-          bodyStyle={{ flex: 1, overflow: 'auto', padding: 0 }}
-          extra={
+          style={{ width: 280, display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}
+          bodyStyle={{ flex: 1, overflow: "auto", padding: 0, minHeight: 0 }}
+          extra={(
             <Tooltip title="新建对话">
               <Button
                 type="primary"
@@ -451,148 +706,220 @@ const ClawChatPage: React.FC = () => {
                 新建
               </Button>
             </Tooltip>
-          }
+          )}
         >
           {renderConversationList()}
         </Card>
       )}
 
-      {/* 右侧：聊天区域 */}
       <Card
-        style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
-        bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          height: "100%",
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+        bodyStyle={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          padding: 0,
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+        title={(
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {isMobile && <MenuOutlined onClick={() => setSidebarDrawerOpen(true)} />}
-            <span>Claw - 对话龙虾</span>
+            <span>Claw 对话龙虾</span>
           </div>
-        }
-        extra={
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        )}
+        extra={(
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <Input
               prefix={<FolderOutlined />}
-              placeholder="工作目录"
               value={workingDirectory}
-              onChange={(e) => setWorkingDirectory(e.target.value)}
-              style={{ width: 200 }}
+              readOnly
+              style={{ width: 220 }}
               size="small"
             />
             <Select
               value={selectedModel}
-              onChange={setSelectedModel}
-              style={{ width: 160 }}
+              disabled
+              style={{ width: 170 }}
               size="small"
-              options={models.map((m) => ({
-                label: m.name,
-                value: m.model_id
-              }))}
+              options={models.map((model) => ({ label: model.name, value: model.model_id }))}
             />
           </div>
-        }
+        )}
       >
-        {/* 消息区域 */}
-        <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+        <div style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }}>
+          <div
+            ref={timelineContainerRef}
+            onScroll={handleTimelineScroll}
+            style={{
+              height: "100%",
+              overflowY: "auto",
+              overflowX: "hidden",
+              padding: "20px 20px 28px",
+              background: "#fafafa",
+            }}
+          >
           {!currentConvId ? (
-            <Empty description="选择或创建对话开始聊天" />
+            <Empty description="选择或创建对话后开始聊天" />
           ) : messagesLoading ? (
-            <div style={{ textAlign: 'center', padding: 40 }}>
+            <div style={{ textAlign: "center", padding: 40 }}>
               <Spin />
             </div>
-          ) : messages.length === 0 ? (
+          ) : displayTimelineItems.length === 0 ? (
             <Empty description="暂无消息，开始对话吧" />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {messages.map((msg, index) => (
-                <div
-                  key={index}
-                  style={{
-                    display: 'flex',
-                    gap: 12,
-                    alignItems: 'flex-start'
-                  }}
-                >
-                  <Avatar
-                    icon={msg.role === 'user' ? <UserOutlined /> : <RobotOutlined />}
-                    style={{
-                      backgroundColor: msg.role === 'user' ? '#1890ff' : '#52c41a',
-                      flexShrink: 0
-                    }}
-                  />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      background: msg.role === 'user' ? '#f0f0f0' : '#e6f7ff',
-                      padding: '12px 16px',
-                      borderRadius: 8,
-                      wordBreak: 'break-word'
-                    }}>
-                      {msg.content || (msg.isStreaming ? <Spin size="small" /> : '(空消息)')}
-                    </div>
-
-                    {/* 工具调用卡片 */}
-                    {msg.toolCalls && msg.toolCalls.length > 0 && (
-                      <div style={{ marginTop: 8 }}>
-                        {msg.toolCalls.map((toolCall) => (
-                          <ToolCallCard key={toolCall.id} toolCall={toolCall} />
-                        ))}
-                      </div>
-                    )}
-
-                    {/* 子智能体卡片 */}
-                    {msg.subAgents && msg.subAgents.length > 0 && (
-                      <div style={{ marginTop: 8 }}>
-                        {msg.subAgents.map((subAgent) => (
-                          <SubAgentCard key={subAgent.id} subAgent={subAgent} />
-                        ))}
-                      </div>
-                    )}
-
-                    {/* 规划任务卡片 */}
-                    {msg.planningTasks && msg.planningTasks.length > 0 && (
-                      <div style={{ marginTop: 8 }}>
-                        <PlanningCard tasks={msg.planningTasks} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {displayTimelineItems.map(renderTimelineItem)}
             </div>
           )}
+          </div>
+
+          {showJumpToLatest ? (
+            <Button
+              type="primary"
+              icon={<ArrowDownOutlined />}
+              onClick={() => scrollTimelineToBottom("smooth")}
+              shape={isMobile ? "circle" : undefined}
+              style={{
+                position: "absolute",
+                right: 16,
+                bottom: 16,
+                boxShadow: "0 10px 24px rgba(22, 119, 255, 0.24)",
+              }}
+            >
+              {!isMobile
+                ? pendingMessageCount > 0
+                  ? `\u56de\u5230\u6700\u65b0\u6d88\u606f ${pendingMessageCount}`
+                  : "\u56de\u5230\u6700\u65b0\u6d88\u606f"
+                : null}
+            </Button>
+          ) : null}
         </div>
 
-        {/* 输入区域 */}
-        <div style={{ padding: 16, borderTop: '1px solid #f0f0f0' }}>
-          <div style={{ display: 'flex', gap: 8 }}>
+        <div
+          style={{
+            padding: 16,
+            borderTop: "1px solid #f0f0f0",
+            background: "#fff",
+            boxShadow: "0 -8px 24px rgba(15, 23, 42, 0.04)",
+            position: "relative",
+            zIndex: 1,
+          }}
+        >
+          {selectedSkill ? (
+            <div style={{ marginBottom: 10 }}>
+              <Tag
+                color="processing"
+                closable
+                onClose={(event) => {
+                  event.preventDefault();
+                  setSelectedSkill(null);
+                }}
+              >
+                {`本轮技能 /${getPreferredSkillAlias(selectedSkill)}`}
+              </Tag>
+            </div>
+          ) : null}
+          {showComposerStatus ? (
+            <div
+              style={{
+                marginBottom: 10,
+                padding: "8px 12px",
+                borderRadius: 10,
+                background: sending ? "#e6f4ff" : "#f6ffed",
+                border: `1px solid ${sending ? "#91caff" : "#b7eb8f"}`,
+                color: sending ? "#0958d9" : "#389e0d",
+                fontSize: 12,
+                lineHeight: 1.4,
+              }}
+            >
+              {composerStatusText}
+            </div>
+          ) : null}
+          {!selectedSkill && slashSuggestions.length > 0 ? (
+            <div
+              style={{
+                marginBottom: 10,
+                border: "1px solid #d9d9d9",
+                borderRadius: 12,
+                background: "#ffffff",
+                boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)",
+                overflow: "hidden",
+              }}
+            >
+              {slashSuggestions.map((skill, index) => (
+                <button
+                  key={skill.name}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSelectSlashSkill(skill)}
+                  style={{
+                    width: "100%",
+                    padding: "12px 14px",
+                    textAlign: "left",
+                    background: "transparent",
+                    border: "none",
+                    borderBottom:
+                      index === slashSuggestions.length - 1 ? "none" : "1px solid #f0f0f0",
+                    cursor: "pointer",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600 }}>{`/${getPreferredSkillAlias(skill)}`}</span>
+                    {skill.name !== getPreferredSkillAlias(skill) ? (
+                      <Tag style={{ marginInlineEnd: 0 }}>{skill.name}</Tag>
+                    ) : null}
+                  </div>
+                  <div style={{ color: "#8c8c8c", fontSize: 12, lineHeight: 1.5 }}>
+                    {skill.description}
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
             <Input.TextArea
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(event) => setInputValue(event.target.value)}
               placeholder="输入消息..."
               autoSize={{ minRows: 1, maxRows: 4 }}
               disabled={!currentConvId || sending}
-              onPressEnter={(e) => {
-                if (!e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage();
+              onPressEnter={(event) => {
+                if (!event.shiftKey) {
+                  event.preventDefault();
+                  void handleSendMessage();
                 }
               }}
             />
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              onClick={handleSendMessage}
-              disabled={!currentConvId || !inputValue.trim() || sending}
-              loading={sending}
-            >
-              发送
-            </Button>
+            {sending ? (
+              <Button danger icon={<CloseCircleOutlined />} onClick={handleStopMessage}>
+                终止
+              </Button>
+            ) : (
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={() => void handleSendMessage()}
+                disabled={!currentConvId || !inputValue.trim()}
+              >
+                发送
+              </Button>
+            )}
           </div>
         </div>
       </Card>
 
-      {/* 新建对话 Modal */}
       <Modal
         title="新建对话"
         open={createModalOpen}
-        onOk={handleCreateConversation}
+        onOk={() => void handleCreateConversation()}
         onCancel={() => {
           setCreateModalOpen(false);
           createForm.resetFields();
@@ -600,42 +927,41 @@ const ClawChatPage: React.FC = () => {
         okText="创建"
         cancelText="取消"
       >
-        <Form
-          form={createForm}
-          layout="vertical"
-          initialValues={{
-            llm_model: 'claude-opus-4-6'
-          }}
-        >
-          <Form.Item
-            label="对话标题"
-            name="title"
-          >
-            <Input placeholder="可选，默认为'新对话'" />
+        <Form form={createForm} layout="vertical" initialValues={{ llm_model: "deepseek-chat" }}>
+          <Form.Item label="对话标题" name="title">
+            <Input placeholder="可选，默认使用“新对话”" />
           </Form.Item>
           <Form.Item
             label="工作目录"
             name="working_directory"
-            rules={[{ required: true, message: '请输入工作目录' }]}
+            rules={[{ required: true, message: "请选择或输入工作目录" }]}
           >
             <Input
               prefix={<FolderOutlined />}
-              placeholder="例如：C:\Users\YourName\Projects"
+              placeholder="例如：C:\\Users\\YourName\\Projects"
+              addonAfter={(
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => setDirectoryBrowserOpen(true)}
+                  style={{ padding: 0 }}
+                >
+                  浏览
+                </Button>
+              )}
             />
           </Form.Item>
-          <Form.Item
-            label="LLM 模型"
-            name="llm_model"
-          >
-            <Select
-              options={models.map((m) => ({
-                label: m.name,
-                value: m.model_id
-              }))}
-            />
+          <Form.Item label="LLM 模型" name="llm_model">
+            <Select options={models.map((model) => ({ label: model.name, value: model.model_id }))} />
           </Form.Item>
         </Form>
       </Modal>
+
+      <DirectoryBrowser
+        open={directoryBrowserOpen}
+        onCancel={() => setDirectoryBrowserOpen(false)}
+        onSelect={(path) => createForm.setFieldsValue({ working_directory: path })}
+      />
     </div>
   );
 };

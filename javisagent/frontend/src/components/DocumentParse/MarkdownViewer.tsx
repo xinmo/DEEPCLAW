@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, Spin, Typography } from 'antd';
+import { Card, Spin, Typography, Progress } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import { Clock, FileText } from 'lucide-react';
 
@@ -18,25 +18,43 @@ interface MarkdownViewerProps {
 
 const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ markdown, loading, progress }) => {
   if (loading) {
+    const percent = progress && progress.total_pages > 0
+      ? Math.round((progress.extracted_pages / progress.total_pages) * 100)
+      : 0;
+
     return (
       <Card
         title="解析结果"
-        style={{ borderRadius: 8, height: '100%' }}
-        extra={<Clock size={16} className="text-blue-500" />}
+        style={{ borderRadius: 8, height: 'calc(100vh - 180px)' }}
+        extra={<Clock size={16} style={{ color: '#1890ff' }} />}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: 200 }}>
-          <Spin size="large" />
-          <div style={{ marginTop: 16, textAlign: 'center' }}>
-            <Text type="secondary">解析中</Text>
-            {progress && progress.total_pages > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <Text strong style={{ fontSize: 16, color: '#1890ff' }}>
-                  {progress.extracted_pages} / {progress.total_pages}
-                </Text>
-                <Text type="secondary" style={{ marginLeft: 4 }}>页</Text>
+        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: 'calc(100vh - 300px)' }}>
+          {progress && progress.total_pages > 0 ? (
+            <div style={{ width: '80%', maxWidth: 300, textAlign: 'center' }}>
+              <Progress
+                type="circle"
+                percent={percent}
+                format={() => (
+                  <div>
+                    <div style={{ fontSize: 24, fontWeight: 'bold', color: '#1890ff' }}>
+                      {progress.extracted_pages}/{progress.total_pages}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#999' }}>页</div>
+                  </div>
+                )}
+              />
+              <div style={{ marginTop: 16 }}>
+                <Text type="secondary">正在解析文档...</Text>
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <>
+              <Spin size="large" />
+              <div style={{ marginTop: 16, textAlign: 'center' }}>
+                <Text type="secondary">正在准备解析...</Text>
+              </div>
+            </>
+          )}
         </div>
       </Card>
     );
@@ -46,24 +64,21 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ markdown, loading, prog
     return (
       <Card
         title="解析结果"
-        style={{ borderRadius: 8, height: '100%' }}
+        style={{ borderRadius: 8, height: 'calc(100vh - 180px)' }}
       >
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'center', 
-          alignItems: 'center', 
-          height: 200,
-          backgroundColor: '#f5f5f5',
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: 'calc(100vh - 300px)',
+          backgroundColor: '#fafafa',
           borderRadius: 8
         }}>
-          <FileText size={48} className="text-gray-300" />
-        </div>
-        <div style={{ 
-          textAlign: 'center', 
-          marginTop: 16,
-          color: '#999'
-        }}>
-          解析完成后将显示 Markdown 内容
+          <FileText size={64} style={{ color: '#d9d9d9' }} />
+          <div style={{ marginTop: 16, color: '#999' }}>
+            解析完成后将显示 Markdown 内容
+          </div>
         </div>
       </Card>
     );
@@ -72,11 +87,12 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ markdown, loading, prog
   return (
     <Card
       title="解析结果"
-      style={{ borderRadius: 8, height: '100%' }}
+      style={{ borderRadius: 8, height: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column' }}
+      styles={{ body: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' } }}
     >
-      <div 
-        style={{ 
-          maxHeight: 500, 
+      <div
+        style={{
+          flex: 1,
           overflow: 'auto',
           padding: 16,
           backgroundColor: '#fafafa',
@@ -85,9 +101,10 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ markdown, loading, prog
       >
         <ReactMarkdown
           components={{
-            code: ({ node, inline, className, children, ...props }) => {
+            code: ({ className, children, ...props }) => {
               const match = /language-(\w+)/.exec(className || '');
-              return !inline && match ? (
+              const isInline = !match;
+              return !isInline ? (
                 <pre style={{ padding: 12, backgroundColor: '#f0f0f0', borderRadius: 6, overflow: 'auto' }}>
                   <code className={className} {...props}>
                     {children}
@@ -99,7 +116,7 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ markdown, loading, prog
                 </code>
               );
             },
-            img: ({ node, src, alt, title, ...props }) => (
+            img: ({ src, alt, title, ...props }) => (
               <div style={{ margin: '16px 0', textAlign: 'center' }}>
                 <img 
                   src={src} 

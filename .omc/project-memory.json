@@ -1,0 +1,111 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1770801784353,
+  "projectRoot": "c:\\Users\\WLX\\Desktop\\JAVISAGENT",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "javisagent": {
+      "path": "javisagent",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1770801783632,
+      "keyFiles": [
+        "README.md"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "javisagent\\frontend\\src\\components\\DocumentParse\\FilePreview.tsx",
+      "accessCount": 15,
+      "lastAccessed": 1770866671084,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\src\\pages\\DocumentParsePage.tsx",
+      "accessCount": 11,
+      "lastAccessed": 1770865183999,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\src\\components\\DocumentParse\\MarkdownViewer.tsx",
+      "accessCount": 10,
+      "lastAccessed": 1770861201546,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\src\\components\\DocumentParse\\TaskList.tsx",
+      "accessCount": 9,
+      "lastAccessed": 1770865129257,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\backend\\src\\routes\\document.py",
+      "accessCount": 7,
+      "lastAccessed": 1770866317279,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\src\\components\\DocumentParse\\FileUpload.tsx",
+      "accessCount": 3,
+      "lastAccessed": 1770814099249,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\src\\services\\api.ts",
+      "accessCount": 3,
+      "lastAccessed": 1770821103515,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\src\\components\\Layout\\AppLayout.tsx",
+      "accessCount": 2,
+      "lastAccessed": 1770861158955,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\tsconfig.app.json",
+      "accessCount": 1,
+      "lastAccessed": 1770813954275,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\backend\\src\\utils\\file_handler.py",
+      "accessCount": 1,
+      "lastAccessed": 1770814055168,
+      "type": "file"
+    },
+    {
+      "path": "javisagent\\frontend\\package.json",
+      "accessCount": 1,
+      "lastAccessed": 1770821267983,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

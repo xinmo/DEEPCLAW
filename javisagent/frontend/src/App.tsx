@@ -1,38 +1,43 @@
-import React, { useState, useEffect } from 'react';
-import AppLayout from './components/Layout/AppLayout';
-import DocumentParsePage from './pages/DocumentParsePage';
-import RealtimeTranslatePage from './pages/RealtimeTranslatePage';
-import KnowledgeBasePage from './pages/KnowledgeBasePage';
-import KnowledgeChatPage from './pages/KnowledgeChatPage';
-import ClawChatPage from './pages/ClawChatPage';
-import PromptManagementPage from './pages/PromptManagementPage';
-import './styles/global.css';
+import React, { useEffect, useState } from "react";
+
+import AppLayout from "./components/Layout/AppLayout";
+import ChannelsPage from "./pages/ChannelsPage";
+import ClawChatPage from "./pages/ClawChatPage";
+import ClawSkillsPage from "./pages/ClawSkillsPage";
+import DocumentParsePage from "./pages/DocumentParsePage";
+import KnowledgeBasePage from "./pages/KnowledgeBasePage";
+import KnowledgeChatPage from "./pages/KnowledgeChatPage";
+import PromptManagementPage from "./pages/PromptManagementPage";
+import RealtimeTranslatePage from "./pages/RealtimeTranslatePage";
+import "./styles/global.css";
 
 const App: React.FC = () => {
-  // 从 localStorage 恢复上次的页面，默认为文档解析页面
   const [currentPage, setCurrentPage] = useState(() => {
-    return localStorage.getItem('javisagent_current_page') || 'document-parse';
+    return localStorage.getItem("javisagent_current_page") || "document-parse";
   });
 
-  // 当页面切换时，保存到 localStorage
   useEffect(() => {
-    localStorage.setItem('javisagent_current_page', currentPage);
+    localStorage.setItem("javisagent_current_page", currentPage);
   }, [currentPage]);
 
   const renderPage = () => {
     switch (currentPage) {
-      case 'document-parse':
+      case "document-parse":
         return <DocumentParsePage />;
-      case 'realtime-translate':
+      case "realtime-translate":
         return <RealtimeTranslatePage />;
-      case 'knowledge-base':
+      case "knowledge-base":
         return <KnowledgeBasePage />;
-      case 'knowledge-chat':
+      case "knowledge-chat":
         return <KnowledgeChatPage />;
-      case 'claw-chat':
+      case "claw-chat":
         return <ClawChatPage />;
-      case 'prompt-management':
+      case "claw-skills":
+        return <ClawSkillsPage />;
+      case "prompt-management":
         return <PromptManagementPage />;
+      case "channel-qq":
+        return <ChannelsPage initialChannel="qq" />;
       default:
         return <DocumentParsePage />;
     }

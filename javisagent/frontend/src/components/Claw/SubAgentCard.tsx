@@ -1,117 +1,141 @@
-import React from 'react';
-import { Card, Progress, Tag, Typography, Space } from 'antd';
+import React from "react";
+import { Card, Collapse, Tag, Typography } from "antd";
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   LoadingOutlined,
   RobotOutlined,
-} from '@ant-design/icons';
-import type { SubAgent } from '../../types/claw';
+} from "@ant-design/icons";
+
+import type { ProcessStatus } from "../../types/claw";
 
 const { Text, Paragraph } = Typography;
 
 interface SubAgentCardProps {
-  subAgent: SubAgent;
+  title: string;
+  status: ProcessStatus;
+  toolId?: string;
+  transcript?: string;
+  result?: string;
 }
 
-const SubAgentCard: React.FC<SubAgentCardProps> = ({ subAgent }) => {
-  const getStatusIcon = () => {
-    switch (subAgent.status) {
-      case 'running':
-        return <LoadingOutlined style={{ color: '#722ed1' }} />;
-      case 'success':
-        return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
-      case 'failed':
-        return <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
-      default:
-        return <RobotOutlined />;
-    }
-  };
+const SubAgentCard: React.FC<SubAgentCardProps> = ({
+  title,
+  status,
+  toolId,
+  transcript,
+  result,
+}) => {
+  const icon =
+    status === "running" ? (
+      <LoadingOutlined style={{ color: "#722ed1" }} />
+    ) : status === "success" || status === "completed" ? (
+      <CheckCircleOutlined style={{ color: "#52c41a" }} />
+    ) : status === "failed" ? (
+      <CloseCircleOutlined style={{ color: "#ff4d4f" }} />
+    ) : (
+      <RobotOutlined style={{ color: "#722ed1" }} />
+    );
 
-  const getStatusColor = () => {
-    switch (subAgent.status) {
-      case 'running':
-        return '#f9f0ff';
-      case 'success':
-        return '#f6ffed';
-      case 'failed':
-        return '#fff2f0';
-      default:
-        return '#fafafa';
-    }
-  };
-
-  const getStatusTag = () => {
-    switch (subAgent.status) {
-      case 'running':
-        return <Tag color="purple">运行中</Tag>;
-      case 'success':
-        return <Tag color="success">已完成</Tag>;
-      case 'failed':
-        return <Tag color="error">失败</Tag>;
-      default:
-        return <Tag>未知</Tag>;
-    }
-  };
+  const tagColor =
+    status === "running"
+      ? "processing"
+      : status === "success" || status === "completed"
+        ? "success"
+        : status === "failed"
+          ? "error"
+          : "default";
 
   return (
     <Card
       size="small"
       style={{
-        marginTop: 8,
-        marginBottom: 8,
-        backgroundColor: getStatusColor(),
-        borderLeft: `3px solid ${subAgent.status === 'success' ? '#52c41a' : subAgent.status === 'failed' ? '#ff4d4f' : '#722ed1'}`
+        marginBottom: 10,
+        borderRadius: 12,
+        background: "#faf7ff",
+        borderColor: "#e8d9ff",
       }}
+      bodyStyle={{ padding: 14 }}
     >
-      <Space direction="vertical" style={{ width: '100%' }} size="small">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {getStatusIcon()}
-          <Text strong>{subAgent.name}</Text>
-          {getStatusTag()}
-          {subAgent.duration && (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {subAgent.duration.toFixed(2)}s
-            </Text>
-          )}
-        </div>
-
-        <div>
-          <Text type="secondary" style={{ fontSize: 12 }}>任务：</Text>
-          <Paragraph style={{ marginBottom: 0, marginTop: 4 }}>
-            {subAgent.task}
-          </Paragraph>
-        </div>
-
-        {subAgent.status === 'running' && subAgent.progress !== undefined && (
-          <Progress
-            percent={subAgent.progress}
-            size="small"
-            status="active"
-            strokeColor="#722ed1"
-          />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        {icon}
+        <Text strong>{title}</Text>
+        <Tag color={tagColor}>{status}</Tag>
+        {toolId && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {toolId}
+          </Text>
         )}
+      </div>
 
-        {subAgent.result && (
-          <div>
-            <Text type="secondary" style={{ fontSize: 12 }}>结果：</Text>
-            <Paragraph
-              style={{
-                marginTop: 4,
-                padding: 8,
-                backgroundColor: '#f5f5f5',
-                borderRadius: 4,
-                fontSize: 12,
-                marginBottom: 0
-              }}
-            >
-              {typeof subAgent.result === 'string'
-                ? subAgent.result
-                : JSON.stringify(subAgent.result, null, 2)}
-            </Paragraph>
-          </div>
-        )}
-      </Space>
+      {transcript && (
+        <Paragraph
+          style={{
+            marginBottom: result ? 10 : 0,
+            padding: 12,
+            borderRadius: 8,
+            background: "#ffffff",
+            whiteSpace: "pre-wrap",
+          }}
+          ellipsis={!result ? { rows: 4, expandable: true, symbol: "展开" } : false}
+        >
+          {transcript}
+        </Paragraph>
+      )}
+
+      {(transcript || result) && (
+        <Collapse
+          ghost
+          items={[
+            {
+              key: "details",
+              label: "查看过程",
+              children: (
+                <div style={{ display: "grid", gap: 14 }}>
+                  {transcript && (
+                    <div>
+                      <Text strong style={{ display: "block", marginBottom: 6 }}>
+                        过程转写
+                      </Text>
+                      <pre
+                        style={{
+                          margin: 0,
+                          padding: 12,
+                          borderRadius: 8,
+                          background: "#ffffff",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {transcript}
+                      </pre>
+                    </div>
+                  )}
+                  {result && (
+                    <div>
+                      <Text strong style={{ display: "block", marginBottom: 6 }}>
+                        最终结果
+                      </Text>
+                      <pre
+                        style={{
+                          margin: 0,
+                          padding: 12,
+                          borderRadius: 8,
+                          background: "#ffffff",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {result}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              ),
+            },
+          ]}
+        />
+      )}
     </Card>
   );
 };

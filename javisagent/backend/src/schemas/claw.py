@@ -1,20 +1,20 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List, Any
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 
-# 对话相关 Schema
+
 class ConversationCreate(BaseModel):
-    title: Optional[str] = "新对话"
+    title: str | None = "New Conversation"
     working_directory: str
     llm_model: str = "claude-opus-4-6"
 
 
 class ConversationUpdate(BaseModel):
-    title: Optional[str] = None
-    working_directory: Optional[str] = None
-    llm_model: Optional[str] = None
+    title: str | None = None
+    working_directory: str | None = None
+    llm_model: str | None = None
 
 
 class ConversationResponse(BaseModel):
@@ -25,48 +25,58 @@ class ConversationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# 消息相关 Schema
 class MessageCreate(BaseModel):
     content: str = Field(..., min_length=1)
+    selected_skill: str | None = None
 
 
 class ToolCallInfo(BaseModel):
-    id: UUID
+    id: str
     tool_name: str
     tool_input: Any
-    tool_output: Optional[Any] = None
+    tool_output: Any | None = None
     status: str
-    duration: Optional[float] = None
-    error: Optional[str] = None
+    duration: float | None = None
+    error: str | None = None
+
+
+class ProcessEventResponse(BaseModel):
+    id: str
+    kind: str
+    title: str
+    status: str
+    sequence: int
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MessageResponse(BaseModel):
     id: UUID
     role: str
     content: str
-    metadata: dict
-    tool_calls: List[ToolCallInfo] = []
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    tool_calls: list[ToolCallInfo] = Field(default_factory=list)
+    process_events: list[ProcessEventResponse] = Field(default_factory=list)
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# 工具验证 Schema
 class DirectoryValidation(BaseModel):
     path: str
 
 
 class DirectoryValidationResponse(BaseModel):
     valid: bool
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
-# 模型列表 Schema
 class ModelInfo(BaseModel):
     model_id: str
     name: str
@@ -74,4 +84,4 @@ class ModelInfo(BaseModel):
 
 
 class ModelsResponse(BaseModel):
-    models: List[ModelInfo]
+    models: list[ModelInfo]

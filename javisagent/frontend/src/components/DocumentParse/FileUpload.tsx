@@ -13,15 +13,6 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileUpload, onUrlSubmit }) =>
   const [activeTab, setActiveTab] = useState<string>('file');
   const [url, setUrl] = useState<string>('');
 
-  const handleFileChange = (info: any) => {
-    if (info.file.status === 'done') {
-      message.success(`${info.file.name} 文件上传成功`);
-      onFileUpload(info.file.originFileObj);
-    } else if (info.file.status === 'error') {
-      message.error(`${info.file.name} 文件上传失败`);
-    }
-  };
-
   const handleUrlSubmit = () => {
     if (!url.trim()) {
       message.error('请输入网页链接');
@@ -36,8 +27,10 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileUpload, onUrlSubmit }) =>
     name: 'file',
     multiple: false,
     showUploadList: false,
-    action: '/api/document/upload',
-    onChange: handleFileChange,
+    beforeUpload: (file: File) => {
+      onFileUpload(file);
+      return false; // 阻止 Ant Design 自动上传
+    },
   };
 
   const tabItems = [

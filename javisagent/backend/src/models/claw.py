@@ -1,9 +1,11 @@
+import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime, Float, Enum, ForeignKey, JSON
+
+from sqlalchemy import JSON, Column, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
+
 from src.models.base import Base
-import enum
 
 
 class MessageRole(str, enum.Enum):
@@ -18,43 +20,85 @@ class ToolCallStatus(str, enum.Enum):
 
 
 class ClawConversation(Base):
-    """Claw 对话会话"""
     __tablename__ = "claw_conversations"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    title = Column(String(255), nullable=False, default="新对话")
+    title = Column(String(255), nullable=False, default="New Conversation")
     working_directory = Column(String(512), nullable=False)
     llm_model = Column(String(100), nullable=False, default="deepseek-chat")
-    system_prompt = Column(Text, nullable=True)  # 对话创建时使用的系统提示词
+    system_prompt = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # 关系
-    messages = relationship("ClawMessage", back_populates="conversation", cascade="all, delete-orphan", lazy="select")
+    messages = relationship(
+        "ClawMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    prompt_snapshot = relationship(
+        "ClawConversationPromptSnapshot",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        lazy="select",
+        uselist=False,
+    )
+
+
+class ClawConversationPromptSnapshot(Base):
+    __tablename__ = "claw_conversation_prompt_snapshots"
+
+    conversation_id = Column(
+        String,
+        ForeignKey("claw_conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    prompt_bundle = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("ClawConversation", back_populates="prompt_snapshot")
 
 
 class ClawMessage(Base):
-    """Claw 消息记录"""
     __tablename__ = "claw_messages"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    conversation_id = Column(String, ForeignKey("claw_conversations.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(
+        String,
+        ForeignKey("claw_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     role = Column(Enum(MessageRole), nullable=False)
     content = Column(Text, nullable=False)
-    extra_data = Column(JSON, default={})
+    extra_data = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # 关系
     conversation = relationship("ClawConversation", back_populates="messages")
-    tool_calls = relationship("ClawToolCall", back_populates="message", cascade="all, delete-orphan", lazy="select")
+    tool_calls = relationship(
+        "ClawToolCall",
+        back_populates="message",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    process_events = relationship(
+        "ClawProcessEvent",
+        back_populates="message",
+        cascade="all, delete-orphan",
+        lazy="select",
+        order_by="ClawProcessEvent.sequence",
+    )
 
 
 class ClawToolCall(Base):
-    """工具调用记录"""
     __tablename__ = "claw_tool_calls"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    message_id = Column(String, ForeignKey("claw_messages.id", ondelete="CASCADE"), nullable=False)
+    message_id = Column(
+        String,
+        ForeignKey("claw_messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     tool_name = Column(String(100), nullable=False)
     tool_input = Column(JSON, nullable=False)
     tool_output = Column(JSON)
@@ -63,5 +107,24 @@ class ClawToolCall(Base):
     error = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # 关系
     message = relationship("ClawMessage", back_populates="tool_calls")
+
+
+class ClawProcessEvent(Base):
+    __tablename__ = "claw_process_events"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    message_id = Column(
+        String,
+        ForeignKey("claw_messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence = Column(Integer, nullable=False, default=0)
+    kind = Column(String(50), nullable=False)
+    title = Column(String(255), nullable=False)
+    status = Column(String(50), nullable=False)
+    data = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    message = relationship("ClawMessage", back_populates="process_events")

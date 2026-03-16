@@ -30,7 +30,11 @@ interface Task {
   id: string;
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
-  createdAt: string;
+  created_at: string;
+  updated_at?: string;
+  result?: string;
+  file_id?: string;
+  file_name?: string;
 }
 
 interface UploadResponse {
@@ -67,8 +71,8 @@ const api = {
   },
 
   // 解析文档
-  parseDocument: async (fileId: string): Promise<ParseResponse> => {
-    const requestBody = { file_id: fileId };
+  parseDocument: async (fileId: string, fileName?: string): Promise<ParseResponse> => {
+    const requestBody = { file_id: fileId, file_name: fileName };
     console.log('Sending parse request:', requestBody);
     const response = await apiClient.post<ParseResponse>('/document/parse', requestBody);
     return response.data;
@@ -97,6 +101,19 @@ const api = {
   // 创建新任务
   createTask: async (): Promise<Task> => {
     const response = await apiClient.post<Task>('/document/tasks');
+    return response.data;
+  },
+
+  // 删除任务
+  deleteTask: async (taskId: string): Promise<void> => {
+    await apiClient.delete(`/document/task/${taskId}`);
+  },
+
+  // 获取文件内容（用于预览）
+  getFile: async (fileId: string): Promise<Blob> => {
+    const response = await apiClient.get(`/document/file/${fileId}`, {
+      responseType: 'blob',
+    });
     return response.data;
   },
 };

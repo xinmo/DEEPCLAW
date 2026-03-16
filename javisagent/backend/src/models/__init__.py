@@ -1,11 +1,35 @@
-from .base import Base, get_db, engine
+from .base import Base, engine, get_db
+from .channels import ChannelConfig, ChannelSession
+from .claw import (
+    ClawConversation,
+    ClawConversationPromptSnapshot,
+    ClawMessage,
+    ClawProcessEvent,
+    ClawToolCall,
+    MessageRole,
+    ToolCallStatus,
+)
+from .knowledge import Conversation, KBDocument, KnowledgeBase, Message, ModelConfig
 from .task import Task, TaskStatus
-from .knowledge import KnowledgeBase, KBDocument, Conversation, Message, ModelConfig
-from .claw import ClawConversation, ClawMessage, ClawToolCall, MessageRole, ToolCallStatus
 
 __all__ = [
-    'Base', 'get_db', 'engine',
-    'Task', 'TaskStatus',
-    'KnowledgeBase', 'KBDocument', 'Conversation', 'Message', 'ModelConfig',
-    'ClawConversation', 'ClawMessage', 'ClawToolCall', 'MessageRole', 'ToolCallStatus'
+    "Base",
+    "engine",
+    "get_db",
+    "Task",
+    "TaskStatus",
+    "KnowledgeBase",
+    "KBDocument",
+    "Conversation",
+    "Message",
+    "ModelConfig",
+    "ChannelConfig",
+    "ChannelSession",
+    "ClawConversation",
+    "ClawConversationPromptSnapshot",
+    "ClawMessage",
+    "ClawProcessEvent",
+    "ClawToolCall",
+    "MessageRole",
+    "ToolCallStatus",
 ]

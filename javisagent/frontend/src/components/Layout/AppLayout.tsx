@@ -1,17 +1,19 @@
-import React, { ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Layout } from 'antd';
 import SideMenu from './SideMenu';
 
-const { Content, Header } = Layout;
+const { Content } = Layout;
 
 interface AppLayoutProps {
   children: ReactNode;
+  onMenuSelect?: (key: string) => void;
+  selectedKey?: string;
 }
 
-const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
+const AppLayout: React.FC<AppLayoutProps> = ({ children, onMenuSelect, selectedKey }) => {
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <SideMenu />
+      <SideMenu onMenuSelect={onMenuSelect} selectedKey={selectedKey} />
       <Layout style={{ flex: 1 }}>
         <Content
           style={{

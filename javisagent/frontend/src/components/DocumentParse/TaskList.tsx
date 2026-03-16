@@ -1,35 +1,28 @@
-import React, { useState } from 'react';
-import { Button, Card, Tag, Space, message } from 'antd';
-import { Plus, FileText, Clock, CheckCircle, X } from 'lucide-react';
+import React from 'react';
+import { Button, Card, Tag, Space, Popconfirm } from 'antd';
+import { Plus, FileText, Clock, CheckCircle, X, Trash2 } from 'lucide-react';
 
-interface Task {
+export interface Task {
   id: string;
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   createdAt: string;
+  file?: File;
+  result?: string;
+  fileId?: string;
+  fileName?: string;
+  isUrlTask?: boolean;
 }
 
 interface TaskListProps {
-  hasNewFile?: boolean;
-  hasNewUrl?: boolean;
+  tasks: Task[];
+  selectedTaskId?: string;
+  onNewTask: () => void;
+  onSelectTask: (taskId: string) => void;
+  onDeleteTask: (taskId: string) => void;
 }
 
-const TaskList: React.FC<TaskListProps> = ({ hasNewFile = false, hasNewUrl = false }) => {
-  const [tasks, setTasks] = useState<Task[]>([
-    {
-      id: '1',
-      name: 'example.pdf',
-      status: 'completed',
-      createdAt: '2026-02-11 10:00:00'
-    },
-    {
-      id: '2',
-      name: 'demo.docx',
-      status: 'running',
-      createdAt: '2026-02-11 09:30:00'
-    }
-  ]);
-
+const TaskList: React.FC<TaskListProps> = ({ tasks, selectedTaskId, onNewTask, onSelectTask, onDeleteTask }) => {
   const getStatusIcon = (status: Task['status']) => {
     switch (status) {
       case 'pending':
@@ -60,27 +53,11 @@ const TaskList: React.FC<TaskListProps> = ({ hasNewFile = false, hasNewUrl = fal
     }
   };
 
-  const handleNewTask = () => {
-    // 检查是否有新上传的文件或链接
-    if (!hasNewFile && !hasNewUrl) {
-      message.warning('请先上传文件或输入网页链接');
-      return;
-    }
-    
-    const newTask: Task = {
-      id: `${tasks.length + 1}`,
-      name: hasNewFile ? '文件解析任务' : '网页解析任务',
-      status: 'pending',
-      createdAt: new Date().toLocaleString()
-    };
-    setTasks([newTask, ...tasks]);
-  };
-
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>任务列表</h3>
-        <Button type="primary" icon={<Plus size={16} />} onClick={handleNewTask}>
+        <Button type="primary" icon={<Plus size={16} />} onClick={onNewTask}>
           新建任务
         </Button>
       </div>
@@ -89,13 +66,16 @@ const TaskList: React.FC<TaskListProps> = ({ hasNewFile = false, hasNewUrl = fal
           <Card
             key={task.id}
             size="small"
-            style={{ 
-              width: '100%', 
-              borderRadius: 8, 
+            style={{
+              width: '100%',
+              borderRadius: 8,
               boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
-              marginBottom: 12
+              marginBottom: 12,
+              border: selectedTaskId === task.id ? '2px solid #1890ff' : undefined,
+              cursor: 'pointer'
             }}
             hoverable
+            onClick={() => onSelectTask(task.id)}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <Space size={8}>
@@ -107,8 +87,16 @@ const TaskList: React.FC<TaskListProps> = ({ hasNewFile = false, hasNewUrl = fal
                 {getStatusTag(task.status)}
               </Space>
             </div>
-            <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
-              创建时间: {task.createdAt}
+            <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: '#666' }}>创建时间: {task.createdAt}</span>
+              <Popconfirm
+                title="确定删除该任务？"
+                onConfirm={() => onDeleteTask(task.id)}
+                okText="删除"
+                cancelText="取消"
+              >
+                <Button type="text" size="small" danger icon={<Trash2 size={14} />} />
+              </Popconfirm>
             </div>
           </Card>
         ))}

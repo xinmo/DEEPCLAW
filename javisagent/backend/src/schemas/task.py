@@ -40,6 +40,7 @@ class ParseResponse(BaseModel):
 
 class ParseRequest(BaseModel):
     file_id: Optional[str] = None
+    file_name: Optional[str] = None
     url: Optional[str] = None
 
 class ExtractProgress(BaseModel):

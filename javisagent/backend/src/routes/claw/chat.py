@@ -1,59 +1,856 @@
+import hashlib
 import json
 import logging
+import re
+import uuid
+from collections.abc import AsyncGenerator
+from datetime import datetime, timedelta
+from typing import Any
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, ToolMessage
 from sqlalchemy.orm import Session
-from uuid import UUID
-from typing import AsyncGenerator
 
 from src.models import get_db
-from src.models.claw import ClawConversation, ClawMessage, MessageRole
+from src.models.claw import (
+    ClawConversation,
+    ClawConversationPromptSnapshot,
+    ClawMessage,
+    ClawProcessEvent,
+    ClawToolCall,
+    MessageRole,
+    ToolCallStatus,
+)
 from src.schemas.claw import MessageCreate, MessageResponse
 from src.services.claw import create_claw_agent
+from src.services.claw.prompt_registry import (
+    SYSTEM_PROMPT_ID,
+    build_deep_agent_prompt_overrides,
+    get_current_prompt_bundle,
+    get_system_prompt_from_bundle,
+    normalize_prompt_bundle,
+)
+from src.services.claw.skill_registry import (
+    extract_slash_skill_command,
+    get_skill_detail,
+    resolve_skill_reference,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/claw", tags=["claw-chat"])
 
+SHELL_TOOL_NAMES = {"shell", "bash", "execute"}
+PLANNING_TOOL_NAMES = {"write_todos"}
+SUBAGENT_TOOL_NAMES = {"task"}
+REPEAT_QUERY_CACHE_WINDOW = timedelta(minutes=10)
 
-@router.get("/conversations/{conv_id}/messages")
-async def get_messages(
+
+def _normalize_tool_name(value: Any) -> str:
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _sanitize_tool_call_id(value: Any) -> str:
+    return str(value).replace(".", "_").replace("/", "_").replace("\\", "_") if value else ""
+
+
+def _ensure_conversation_prompt_snapshot(
+    conversation: ClawConversation,
+    db: Session,
+) -> dict[str, str]:
+    current_prompt_bundle = get_current_prompt_bundle()
+    snapshot = conversation.prompt_snapshot
+    stored_prompt_bundle = normalize_prompt_bundle(
+        snapshot.prompt_bundle if snapshot is not None else None
+    )
+
+    prompt_bundle = {**current_prompt_bundle, **stored_prompt_bundle}
+    if conversation.system_prompt:
+        prompt_bundle[SYSTEM_PROMPT_ID] = stored_prompt_bundle.get(
+            SYSTEM_PROMPT_ID,
+            conversation.system_prompt,
+        )
+
+    if snapshot is None:
+        conversation.prompt_snapshot = ClawConversationPromptSnapshot(
+            conversation_id=str(conversation.id),
+            prompt_bundle=prompt_bundle,
+        )
+        db.add(conversation.prompt_snapshot)
+        db.commit()
+        db.refresh(conversation)
+        return prompt_bundle
+
+    if snapshot.prompt_bundle != prompt_bundle:
+        snapshot.prompt_bundle = prompt_bundle
+        db.commit()
+        db.refresh(conversation)
+
+    return prompt_bundle
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return str(value)
+
+
+def _stringify(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(_jsonable(value), ensure_ascii=False)
+
+
+def _sse_event(event_type: str, **payload: Any) -> str:
+    return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
+
+
+def _iter_content_blocks(message: AIMessage | ToolMessage) -> list[dict[str, Any]]:
+    blocks = getattr(message, "content_blocks", None)
+    if blocks:
+        return blocks
+
+    content = getattr(message, "content", None)
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return [block for block in content if isinstance(block, dict)]
+    return []
+
+
+def _tool_call_blocks_from_message(message: AIMessage, existing_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen_ids = {
+        block.get("id")
+        for block in existing_blocks
+        if block.get("type") in {"tool_call", "tool_call_chunk"} and block.get("id")
+    }
+    extra_blocks: list[dict[str, Any]] = []
+
+    for tool_call in getattr(message, "tool_calls", []) or []:
+        if not isinstance(tool_call, dict):
+            continue
+
+        tool_name = tool_call.get("name")
+        if not tool_name:
+            continue
+
+        tool_id = tool_call.get("id")
+        if tool_id and tool_id in seen_ids:
+            continue
+
+        extra_blocks.append(
+            {
+                "type": "tool_call",
+                "id": tool_id,
+                "name": tool_name,
+                "args": tool_call.get("args", {}),
+            }
+        )
+
+    return extra_blocks
+
+
+def _tool_call_chunk_blocks_from_message(
+    message: AIMessage,
+    existing_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    raw_chunks = getattr(message, "tool_call_chunks", None)
+    if not isinstance(raw_chunks, list):
+        return []
+
+    seen_signatures = {
+        (
+            str(block.get("id") or ""),
+            block.get("index"),
+            str(block.get("name") or ""),
+            json.dumps(_jsonable(block.get("args")), ensure_ascii=False, sort_keys=True),
+        )
+        for block in existing_blocks
+        if block.get("type") == "tool_call_chunk"
+    }
+    extra_blocks: list[dict[str, Any]] = []
+
+    for raw_chunk in raw_chunks:
+        if not isinstance(raw_chunk, dict):
+            continue
+
+        signature = (
+            str(raw_chunk.get("id") or ""),
+            raw_chunk.get("index"),
+            str(raw_chunk.get("name") or ""),
+            json.dumps(_jsonable(raw_chunk.get("args")), ensure_ascii=False, sort_keys=True),
+        )
+        if signature in seen_signatures:
+            continue
+
+        block = {
+            "type": "tool_call_chunk",
+            "id": raw_chunk.get("id"),
+            "name": raw_chunk.get("name"),
+            "args": raw_chunk.get("args"),
+        }
+        if raw_chunk.get("index") is not None:
+            block["index"] = raw_chunk["index"]
+
+        extra_blocks.append(block)
+        seen_signatures.add(signature)
+
+    return extra_blocks
+
+
+def _tool_call_blocks_from_additional_kwargs(
+    message: AIMessage,
+    existing_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    additional_kwargs = getattr(message, "additional_kwargs", None)
+    if not isinstance(additional_kwargs, dict):
+        return []
+
+    seen_ids = {
+        str(block.get("id"))
+        for block in existing_blocks
+        if block.get("type") in {"tool_call", "tool_call_chunk"} and block.get("id") is not None
+    }
+    seen_signatures = {
+        (
+            str(block.get("name") or ""),
+            json.dumps(_jsonable(block.get("args")), ensure_ascii=False, sort_keys=True),
+        )
+        for block in existing_blocks
+        if block.get("type") in {"tool_call", "tool_call_chunk"} and block.get("name")
+    }
+    extra_blocks: list[dict[str, Any]] = []
+
+    def add_candidate(
+        *,
+        tool_id: Any = None,
+        tool_name: Any = None,
+        tool_args: Any = None,
+        index: int | None = None,
+    ) -> None:
+        normalized_name = str(tool_name).strip() if tool_name is not None else ""
+        if not normalized_name and tool_args is None:
+            return
+
+        normalized_id = str(tool_id).strip() if tool_id is not None else ""
+        if normalized_id and normalized_id in seen_ids:
+            return
+
+        signature = (
+            normalized_name,
+            json.dumps(_jsonable(tool_args), ensure_ascii=False, sort_keys=True),
+        )
+        if signature in seen_signatures:
+            return
+
+        block: dict[str, Any] = {
+            "type": "tool_call",
+            "name": normalized_name or None,
+            "args": tool_args,
+        }
+        if normalized_id:
+            block["id"] = normalized_id
+            seen_ids.add(normalized_id)
+        if index is not None:
+            block["index"] = index
+
+        seen_signatures.add(signature)
+        extra_blocks.append(block)
+
+    raw_tool_calls = additional_kwargs.get("tool_calls")
+    if isinstance(raw_tool_calls, list):
+        for index, raw_tool_call in enumerate(raw_tool_calls):
+            if not isinstance(raw_tool_call, dict):
+                continue
+
+            function_payload = raw_tool_call.get("function")
+            tool_name = raw_tool_call.get("name")
+            tool_args = raw_tool_call.get("arguments") or raw_tool_call.get("args")
+            if isinstance(function_payload, dict):
+                tool_name = function_payload.get("name") or tool_name
+                tool_args = function_payload.get("arguments") or tool_args
+
+            add_candidate(
+                tool_id=raw_tool_call.get("id") or raw_tool_call.get("tool_call_id"),
+                tool_name=tool_name,
+                tool_args=tool_args,
+                index=index,
+            )
+
+    raw_function_call = additional_kwargs.get("function_call")
+    if isinstance(raw_function_call, dict):
+        add_candidate(
+            tool_id=raw_function_call.get("id") or raw_function_call.get("tool_call_id"),
+            tool_name=raw_function_call.get("name"),
+            tool_args=raw_function_call.get("arguments") or raw_function_call.get("args"),
+            index=0,
+        )
+
+    return extra_blocks
+
+
+def _find_todos(payload: Any) -> list[dict[str, Any]] | None:
+    if isinstance(payload, dict):
+        todos = payload.get("todos")
+        if isinstance(todos, list):
+            return _jsonable(todos)
+        for value in payload.values():
+            found = _find_todos(value)
+            if found is not None:
+                return found
+        return None
+
+    if isinstance(payload, list):
+        for item in payload:
+            found = _find_todos(item)
+            if found is not None:
+                return found
+        return None
+
+    if isinstance(payload, str):
+        stripped = payload.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+        return _find_todos(parsed)
+
+    return None
+
+
+def _derive_planning_status(todos: list[dict[str, Any]]) -> str:
+    if not todos:
+        return "pending"
+
+    statuses = {str(item.get("status", "pending")) for item in todos if isinstance(item, dict)}
+    if "in_progress" in statuses:
+        return "in_progress"
+    if statuses and statuses <= {"completed"}:
+        return "completed"
+    return "pending"
+
+
+def _derive_shell_command(tool_input: Any) -> str:
+    if isinstance(tool_input, str) and tool_input:
+        return tool_input
+
+    if not isinstance(tool_input, dict):
+        return ""
+
+    for key in ("command", "cmd", "script"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    commands = tool_input.get("commands")
+    if isinstance(commands, list):
+        parts = [part.strip() for part in commands if isinstance(part, str) and part.strip()]
+        if parts:
+            return " && ".join(parts)
+
+    argv = tool_input.get("args")
+    if isinstance(argv, list):
+        parts = [str(part).strip() for part in argv if str(part).strip()]
+        if parts:
+            return " ".join(parts)
+
+    return ""
+
+
+def _extract_shell_command_from_text(output: str) -> str:
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        for pattern in (
+            r"^'([^'\r\n]+)'\s+不是内部或外部命令",
+            r"^'([^'\r\n]+)'\s+is not recognized as an internal or external command",
+            r"^([^:\r\n]+)\s*:\s+The term '([^'\r\n]+)' is not recognized as the name of a cmdlet",
+            r"^(?:/bin/sh:\s*\d+:\s*)?([^\s:]+):\s+(?:not found|command not found)",
+            r"^bash:\s+([^\s:]+):\s+command not found",
+        ):
+            match = re.search(pattern, line, re.IGNORECASE)
+            if not match:
+                continue
+
+            for group in match.groups():
+                if isinstance(group, str) and group.strip():
+                    return group.strip()
+
+    return ""
+
+
+def _extract_shell_input_from_raw_args(raw_args: Any) -> dict[str, Any] | None:
+    if not isinstance(raw_args, str):
+        return None
+
+    trimmed = raw_args.strip()
+    if not trimmed:
+        return None
+
+    if trimmed.startswith("{") or trimmed.startswith("["):
+        return None
+
+    patterns = (
+        r'"(?:command|cmd|script)"\s*:\s*"(?P<value>.+?)"(?:\s*[,}])?',
+        r'"(?:command|cmd|script)"\s*:\s*"(?P<value>.+)$',
+        r"(?:command|cmd|script)\s*[:=]\s*(?P<value>.+)$",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, trimmed, re.IGNORECASE)
+        if not match:
+            continue
+
+        value = match.group("value").strip().rstrip(",}")
+        if value.endswith('"'):
+            value = value[:-1]
+        value = value.replace('\\"', '"').replace("\\\\", "\\").strip()
+        if value:
+            return {"command": value}
+
+    return None
+
+
+def _parse_tool_call_args_dict(raw_args: Any) -> dict[str, Any] | None:
+    if isinstance(raw_args, dict):
+        return raw_args
+
+    if not isinstance(raw_args, str):
+        return None
+
+    trimmed = raw_args.strip()
+    if not trimmed:
+        return None
+
+    try:
+        parsed = json.loads(trimmed)
+    except json.JSONDecodeError:
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _merge_tool_call_arg_text(existing_text: str, new_text: str) -> str:
+    if not existing_text:
+        return new_text
+    if not new_text:
+        return existing_text
+    if new_text.startswith(existing_text):
+        return new_text
+    if existing_text.startswith(new_text):
+        return existing_text
+    return f"{existing_text}{new_text}"
+
+
+def _normalize_partial_tool_call_args(raw_args: Any, tool_name: str = "") -> dict[str, Any] | None:
+    if raw_args is None:
+        return None
+
+    strict_dict = _parse_tool_call_args_dict(raw_args)
+    if strict_dict is not None:
+        return strict_dict
+
+    if not isinstance(raw_args, str):
+        return None
+
+    stripped = raw_args.strip()
+    if not stripped:
+        return None
+
+    normalized_tool_name = _normalize_tool_name(tool_name)
+    if normalized_tool_name in SHELL_TOOL_NAMES:
+        extracted = _extract_shell_input_from_raw_args(stripped)
+        if extracted is not None:
+            return extracted
+        if stripped.startswith("{") or stripped.startswith("["):
+            return None
+        return {"command": stripped}
+
+    return None
+
+
+def _derive_subagent_title(tool_input: dict[str, Any]) -> str:
+    for key in ("description", "task", "prompt", "subtask", "objective"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return "Subagent"
+
+
+def _extract_tool_output(message: ToolMessage) -> Any:
+    artifact = getattr(message, "artifact", None)
+    if artifact is not None:
+        return _jsonable(artifact)
+    return _jsonable(getattr(message, "content", None))
+
+
+def _merge_tool_input_from_message(
+    tool_name: str,
+    tool_input: dict[str, Any] | None,
+    message: ToolMessage,
+) -> dict[str, Any]:
+    merged_input = dict(_jsonable(tool_input or {}))
+    additional_kwargs = getattr(message, "additional_kwargs", None)
+    normalized_tool_name = _normalize_tool_name(tool_name)
+
+    if isinstance(additional_kwargs, dict):
+        if normalized_tool_name == "read_file":
+            read_file_path = additional_kwargs.get("read_file_path")
+            has_path = any(
+                isinstance(merged_input.get(key), str) and merged_input.get(key)
+                for key in ("file_path", "path", "target_path")
+            )
+            if isinstance(read_file_path, str) and read_file_path and not has_path:
+                merged_input["file_path"] = read_file_path
+
+    if normalized_tool_name in SHELL_TOOL_NAMES:
+        for source in (
+            additional_kwargs if isinstance(additional_kwargs, dict) else None,
+            getattr(message, "artifact", None),
+            getattr(message, "content", None),
+        ):
+            if not isinstance(source, dict):
+                continue
+
+            for key in ("command", "cmd", "script", "commands", "args"):
+                value = source.get(key)
+                if value in (None, "", [], {}):
+                    continue
+                if merged_input.get(key) in (None, "", [], {}):
+                    merged_input[key] = _jsonable(value)
+
+        if not _derive_shell_command(merged_input):
+            for source in (
+                getattr(message, "content", None),
+                merged_input.get("output"),
+            ):
+                if isinstance(source, str):
+                    command_hint = _extract_shell_command_from_text(source)
+                    if command_hint:
+                        merged_input["command"] = command_hint
+                        break
+
+    return merged_input
+
+
+def _merge_tool_call_args(existing_args: Any, new_args: Any) -> Any:
+    if new_args is None:
+        return existing_args
+
+    if isinstance(new_args, dict):
+        if isinstance(existing_args, dict):
+            return {**existing_args, **new_args}
+        if isinstance(existing_args, str):
+            try:
+                parsed_existing = json.loads(existing_args)
+            except json.JSONDecodeError:
+                return new_args if new_args else existing_args
+            if isinstance(parsed_existing, dict):
+                return {**parsed_existing, **new_args}
+        return new_args
+
+    return new_args
+
+
+def _normalize_tool_call_args(raw_args: Any, tool_name: str = "") -> dict[str, Any] | None:
+    if raw_args is None:
+        logger.debug(f"_normalize_tool_call_args: raw_args is None for tool {tool_name}")
+        return None
+
+    parsed_args = raw_args
+    if isinstance(parsed_args, str):
+        logger.debug(f"_normalize_tool_call_args: raw_args is string: {repr(parsed_args[:100])} for tool {tool_name}")
+        try:
+            parsed_args = json.loads(parsed_args)
+            logger.debug(f"_normalize_tool_call_args: successfully parsed JSON for tool {tool_name}")
+        except json.JSONDecodeError:
+            # 对于 shell 工具，如果是无法解析的字符串，尝试作为命令处理
+            normalized_tool_name = _normalize_tool_name(tool_name)
+            logger.debug(f"_normalize_tool_call_args: JSON parse failed, normalized_tool_name={normalized_tool_name}, is_shell={normalized_tool_name in SHELL_TOOL_NAMES}")
+            if normalized_tool_name in SHELL_TOOL_NAMES and parsed_args.strip():
+                result = {"command": parsed_args.strip()}
+                logger.info(f"_normalize_tool_call_args: Converting string to command dict for shell tool: {result}")
+                return result
+            logger.debug(f"_normalize_tool_call_args: Returning None for non-shell tool or empty string")
+            return None
+
+    if not isinstance(parsed_args, dict):
+        logger.debug(f"_normalize_tool_call_args: parsed_args is not dict, wrapping in value for tool {tool_name}")
+        return {"value": parsed_args}
+
+    logger.debug(f"_normalize_tool_call_args: returning dict with keys {list(parsed_args.keys())} for tool {tool_name}")
+    return parsed_args
+
+
+def _extract_shell_payload(message: ToolMessage, tool_input: dict[str, Any]) -> dict[str, Any]:
+    def parse_combined_shell_output(output: str) -> dict[str, Any]:
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        exit_code: int | None = None
+
+        for raw_line in output.splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("[stderr] "):
+                stderr_lines.append(line[len("[stderr] ") :])
+                continue
+            if line.startswith("Exit code: "):
+                try:
+                    exit_code = int(line[len("Exit code: ") :].strip())
+                except ValueError:
+                    pass
+                continue
+            if line.startswith("[Command failed with exit code"):
+                continue
+            if line == "<no output>":
+                continue
+            stdout_lines.append(line)
+
+        return {
+            "stdout": "\n".join(stdout_lines).strip(),
+            "stderr": "\n".join(stderr_lines).strip(),
+            "exit_code": exit_code,
+            "output": output,
+        }
+
+    payload: dict[str, Any] = {}
+
+    artifact = getattr(message, "artifact", None)
+    if isinstance(artifact, dict):
+        payload.update(_jsonable(artifact))
+
+    content = getattr(message, "content", None)
+    if isinstance(content, dict):
+        payload.update(_jsonable(content))
+    elif isinstance(content, str) and content:
+        parsed_output = parse_combined_shell_output(content)
+        if parsed_output["stdout"]:
+            payload.setdefault("stdout", parsed_output["stdout"])
+        if parsed_output["stderr"]:
+            payload.setdefault("stderr", parsed_output["stderr"])
+        if parsed_output["exit_code"] is not None:
+            payload.setdefault("exit_code", parsed_output["exit_code"])
+        payload.setdefault("output", parsed_output["output"])
+
+    command = ""
+    raw_command = payload.get("command")
+    if isinstance(raw_command, str) and raw_command.strip():
+        command = raw_command.strip()
+
+    if not command:
+        command = _derive_shell_command(tool_input)
+
+    if not command:
+        for source in (payload.get("stderr"), payload.get("output"), payload.get("stdout")):
+            if isinstance(source, str):
+                command = _extract_shell_command_from_text(source)
+                if command:
+                    break
+
+    payload["command"] = command
+    if "exit_code" not in payload:
+        payload["exit_code"] = 0 if getattr(message, "status", "success") == "success" else None
+    payload.setdefault("stderr", "")
+    if "stdout" not in payload:
+        payload["stdout"] = "" if payload.get("stderr") else payload.get("output", "")
+    return payload
+
+
+def _flatten_namespace_parts(namespace: tuple[Any, ...]) -> list[str]:
+    parts: list[str] = []
+
+    def visit(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+            return
+        parts.append(str(value))
+
+    visit(namespace)
+    return [part for part in parts if part]
+
+
+def _serialize_tool_call(tool_call: ClawToolCall) -> dict[str, Any]:
+    return {
+        "id": tool_call.id,
+        "tool_name": tool_call.tool_name,
+        "tool_input": tool_call.tool_input,
+        "tool_output": tool_call.tool_output,
+        "status": tool_call.status.value,
+        "duration": tool_call.duration,
+        "error": tool_call.error,
+    }
+
+
+def _serialize_process_event(process_event: ClawProcessEvent) -> dict[str, Any]:
+    return {
+        "id": process_event.id,
+        "kind": process_event.kind,
+        "title": process_event.title,
+        "status": process_event.status,
+        "sequence": process_event.sequence,
+        "data": process_event.data or {},
+        "created_at": process_event.created_at,
+        "updated_at": process_event.updated_at,
+    }
+
+
+def _normalize_user_message(content: str) -> str:
+    return " ".join(content.split()).strip()
+
+
+def _find_recent_duplicate_reply(
     conv_id: UUID,
-    db: Session = Depends(get_db)
-):
-    """获取对话消息历史"""
+    user_message: str,
+    selected_skill: str | None,
+    selected_skill_revision: str | None,
+    db: Session,
+) -> ClawMessage | None:
+    normalized_message = _normalize_user_message(user_message)
+    if not normalized_message:
+        return None
+
+    recent_messages = (
+        db.query(ClawMessage)
+        .filter_by(conversation_id=str(conv_id))
+        .order_by(ClawMessage.created_at.desc())
+        .limit(2)
+        .all()
+    )
+    if len(recent_messages) < 2:
+        return None
+
+    latest_message, previous_message = recent_messages[0], recent_messages[1]
+    if latest_message.role != MessageRole.ASSISTANT or previous_message.role != MessageRole.USER:
+        return None
+    if _normalize_user_message(previous_message.content) != normalized_message:
+        return None
+    previous_selected_skill = (previous_message.extra_data or {}).get("selected_skill")
+    if previous_selected_skill != selected_skill:
+        return None
+    previous_selected_skill_revision = (previous_message.extra_data or {}).get(
+        "selected_skill_revision"
+    )
+    if previous_selected_skill_revision != selected_skill_revision:
+        return None
+    if not latest_message.content.strip():
+        return None
+    if datetime.utcnow() - latest_message.created_at > REPEAT_QUERY_CACHE_WINDOW:
+        return None
+
+    return latest_message
+
+
+def _fingerprint_selected_skill_content(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_selected_skill_turn_instruction(skill: dict[str, Any]) -> str:
+    description = str(skill.get("description") or "").strip()
+    declared_name = str(skill.get("declared_name") or "").strip()
+    skill_content = str(skill.get("content") or "").strip()
+    skill_path = str(skill.get("skill_file_path") or skill.get("path") or "").strip()
+    aliases = [
+        str(alias).strip()
+        for alias in skill.get("aliases", [])
+        if str(alias).strip()
+    ]
+    label = skill["name"]
+    if declared_name and declared_name.lower() != label.lower():
+        label = f"{label} ({declared_name})"
+
+    lines = [
+        "# User-requested Skill For This Turn",
+        f"The user explicitly requested that you use the enabled skill `{label}` for this turn.",
+    ]
+    if aliases:
+        lines.append(f"Requested via slash alias: `/{aliases[0]}`.")
+    if description:
+        lines.append(f"Skill summary: {description}")
+    if skill_path:
+        lines.append(f"The full contents of `{skill_path}` are preloaded below.")
+    lines.extend(
+        [
+            "Treat the preloaded skill file as authoritative instructions for this turn.",
+            "You do not need to read the main `SKILL.md` again unless you need to verify or inspect supporting files referenced by it.",
+        ]
+    )
+    if skill_content:
+        lines.extend(
+            [
+                "",
+                "<preloaded_skill_file>",
+                skill_content,
+                "</preloaded_skill_file>",
+            ]
+        )
+    lines.append("This instruction applies only to the current user turn.")
+    return "\n".join(lines)
+
+
+def _build_selected_skill_metadata(skill: dict[str, Any] | None) -> dict[str, Any]:
+    if skill is None:
+        return {}
+
+    aliases = [
+        str(alias).strip()
+        for alias in skill.get("aliases", [])
+        if str(alias).strip()
+    ]
+    skill_content = str(skill.get("content") or "")
+    skill_path = str(skill.get("skill_file_path") or skill.get("path") or "").strip()
+    return {
+        "selected_skill": skill["name"],
+        "selected_skill_alias": aliases[0] if aliases else skill["name"],
+        "selected_skill_file_path": skill_path,
+        "selected_skill_preloaded": bool(skill_content.strip()),
+        "selected_skill_revision": _fingerprint_selected_skill_content(skill_content),
+    }
+
+
+@router.get("/conversations/{conv_id}/messages", response_model=list[MessageResponse])
+async def get_messages(conv_id: UUID, db: Session = Depends(get_db)):
     conversation = db.query(ClawConversation).filter_by(id=str(conv_id)).first()
     if not conversation:
-        raise HTTPException(status_code=404, detail="对话不存在")
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    messages = db.query(ClawMessage).filter_by(
-        conversation_id=str(conv_id)
-    ).order_by(ClawMessage.created_at).all()
+    messages = (
+        db.query(ClawMessage)
+        .filter_by(conversation_id=str(conv_id))
+        .order_by(ClawMessage.created_at)
+        .all()
+    )
 
-    # 转换消息格式
     result = []
-    for msg in messages:
-        # 获取关联的工具调用
-        tool_calls_info = []
-        for tc in msg.tool_calls:
-            tool_calls_info.append({
-                "id": tc.id,
-                "tool_name": tc.tool_name,
-                "tool_input": tc.tool_input,
-                "tool_output": tc.tool_output,
-                "status": tc.status.value,
-                "duration": tc.duration,
-                "error": tc.error
-            })
-
-        result.append({
-            "id": msg.id,
-            "role": msg.role.value,
-            "content": msg.content,
-            "metadata": msg.extra_data or {},
-            "tool_calls": tool_calls_info,
-            "created_at": msg.created_at
-        })
+    for message in messages:
+        tool_calls = sorted(message.tool_calls, key=lambda item: item.created_at)
+        process_events = sorted(message.process_events, key=lambda item: item.sequence)
+        result.append(
+            {
+                "id": message.id,
+                "role": message.role.value,
+                "content": message.content,
+                "metadata": message.extra_data or {},
+                "tool_calls": [_serialize_tool_call(tool_call) for tool_call in tool_calls],
+                "process_events": [
+                    _serialize_process_event(process_event) for process_event in process_events
+                ],
+                "created_at": message.created_at,
+            }
+        )
 
     return result
 
@@ -62,165 +859,960 @@ async def chat_event_generator(
     conv_id: UUID,
     user_message: str,
     conversation: ClawConversation,
-    db: Session
+    db: Session,
+    selected_skill_name: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """
-    SSE 事件生成器
+    assistant_message: ClawMessage | None = None
+    assistant_fragments: list[str] = []
+    timeline_entries: list[dict[str, Any]] = []
+    tool_call_buffers: dict[str | int, dict[str, Any]] = {}
+    tool_records: dict[str, ClawToolCall] = {}
+    process_events: dict[str, ClawProcessEvent] = {}
+    pending_subagent_tool_ids: list[str] = []
+    namespace_to_subagent_id: dict[tuple[Any, ...], str] = {}
+    planning_item_id: str | None = None
+    process_sequence = 0
+    next_text_timeline_index = 1
+    current_text_timeline_id: str | None = None
+    selected_skill = (
+        get_skill_detail(resolve_skill_reference(selected_skill_name, enabled_only=True)["name"])
+        if selected_skill_name
+        else None
+    )
+    selected_skill_metadata = _build_selected_skill_metadata(selected_skill)
 
-    生成的事件类型：
-    - text: 文本内容
-    - tool_call: 工具调用开始
-    - tool_result: 工具调用结果
-    - subagent_start: 子智能体启动
-    - subagent_progress: 子智能体进度
-    - subagent_complete: 子智能体完成
-    - planning: 规划任务
-    - done: 响应完成
-    - error: 错误
-    """
-    try:
-        # 保存用户消息
-        user_msg = ClawMessage(
-            conversation_id=str(conv_id),
-            role=MessageRole.USER,
-            content=user_message
-        )
-        db.add(user_msg)
+    def touch_conversation() -> None:
+        conversation.updated_at = datetime.utcnow()
+
+    def persist_stream_snapshot(stream_in_progress: bool = True) -> None:
+        if assistant_message is None:
+            return
+
+        assistant_message.content = "".join(assistant_fragments)
+        metadata: dict[str, Any] = {
+            "stream_protocol": "claw.v2",
+            "tool_call_count": len(tool_records),
+            "process_event_count": len(process_events),
+            "timeline": _jsonable(timeline_entries),
+        }
+        if stream_in_progress:
+            metadata["stream_in_progress"] = True
+        assistant_message.extra_data = metadata
+        touch_conversation()
         db.commit()
 
-        # 创建 Agent，传递自定义提示词
+    def append_timeline_text(text: str) -> None:
+        nonlocal current_text_timeline_id, next_text_timeline_index
+        if not text:
+            return
+
+        if current_text_timeline_id is None:
+            current_text_timeline_id = f"text:{assistant_message.id}:{next_text_timeline_index}"
+            next_text_timeline_index += 1
+            timeline_entries.append(
+                {
+                    "kind": "text",
+                    "item_id": current_text_timeline_id,
+                    "content": text,
+                }
+            )
+            return
+
+        for entry in reversed(timeline_entries):
+            if entry.get("item_id") == current_text_timeline_id:
+                entry["content"] = f"{entry.get('content', '')}{text}"
+                return
+
+    def append_timeline_item(
+        kind: str,
+        *,
+        item_id: str | None = None,
+        tool_id: str | None = None,
+    ) -> None:
+        nonlocal current_text_timeline_id
+        current_text_timeline_id = None
+
+        for entry in timeline_entries:
+            if (
+                entry.get("kind") == kind
+                and entry.get("item_id") == item_id
+                and entry.get("tool_id") == tool_id
+            ):
+                return
+
+        entry: dict[str, Any] = {"kind": kind}
+        if item_id is not None:
+            entry["item_id"] = item_id
+        if tool_id is not None:
+            entry["tool_id"] = tool_id
+        timeline_entries.append(entry)
+
+    def upsert_process_event(
+        item_id: str,
+        *,
+        kind: str,
+        title: str,
+        status: str,
+        data: dict[str, Any] | None = None,
+    ) -> ClawProcessEvent:
+        nonlocal process_sequence
+        payload = _jsonable(data or {})
+        process_event = process_events.get(item_id)
+
+        if process_event is None:
+            process_sequence += 1
+            process_event = ClawProcessEvent(
+                id=item_id,
+                message_id=assistant_message.id,
+                sequence=process_sequence,
+                kind=kind,
+                title=title,
+                status=status,
+                data=payload,
+            )
+            db.add(process_event)
+            process_events[item_id] = process_event
+        else:
+            process_event.kind = kind
+            process_event.title = title
+            process_event.status = status
+            process_event.data = payload
+
+        db.flush()
+        return process_event
+
+    def ensure_tool_record(
+        tool_id: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> ClawToolCall:
+        tool_record = tool_records.get(tool_id)
+        payload = _jsonable(tool_input)
+
+        if tool_record is None:
+            tool_record = ClawToolCall(
+                id=tool_id,
+                message_id=assistant_message.id,
+                tool_name=tool_name,
+                tool_input=payload,
+                status=ToolCallStatus.RUNNING,
+            )
+            db.add(tool_record)
+            tool_records[tool_id] = tool_record
+        else:
+            tool_record.tool_name = tool_name
+            tool_record.tool_input = payload
+
+        db.flush()
+        return tool_record
+
+    def ensure_subagent_binding(namespace: tuple[Any, ...]) -> tuple[ClawProcessEvent, bool]:
+        created = False
+        item_id = namespace_to_subagent_id.get(namespace)
+
+        if item_id is None:
+            if pending_subagent_tool_ids:
+                tool_id = pending_subagent_tool_ids.pop(0)
+                item_id = f"subagent:{tool_id}"
+            else:
+                item_id = f"subagent:{uuid.uuid4().hex}"
+                created = True
+            namespace_to_subagent_id[namespace] = item_id
+
+        process_event = process_events.get(item_id)
+        if process_event is None:
+            namespace_parts = [
+                part
+                for part in _flatten_namespace_parts(namespace)
+                if not (part == "tools" or part.startswith("tools:"))
+            ]
+            title = " / ".join(namespace_parts) or "Subagent"
+            process_event = upsert_process_event(
+                item_id,
+                kind="subagent",
+                title=title,
+                status="running",
+                data={"namespace": [str(part) for part in namespace], "transcript": ""},
+            )
+            created = True
+        else:
+            data = dict(process_event.data or {})
+            data["namespace"] = [str(part) for part in namespace]
+            process_event = upsert_process_event(
+                item_id,
+                kind="subagent",
+                title=process_event.title,
+                status=process_event.status,
+                data=data,
+            )
+
+        return process_event, created
+
+    def resolve_tool_id(tool_message: ToolMessage) -> str:
+        tool_id = getattr(tool_message, "tool_call_id", None)
+        tool_name = getattr(tool_message, "name", None)
+        normalized_tool_name = _normalize_tool_name(tool_name)
+        if tool_id:
+            normalized_tool_id = str(tool_id)
+            if normalized_tool_id in tool_records:
+                return normalized_tool_id
+
+            sanitized_tool_id = _sanitize_tool_call_id(normalized_tool_id)
+            sanitized_matches = [
+                existing_id
+                for existing_id, tool_record in tool_records.items()
+                if (
+                    tool_record.status == ToolCallStatus.RUNNING
+                    and (
+                        existing_id == sanitized_tool_id
+                        or _sanitize_tool_call_id(existing_id) == normalized_tool_id
+                        or _sanitize_tool_call_id(existing_id) == sanitized_tool_id
+                    )
+                    and (
+                        not normalized_tool_name
+                        or _normalize_tool_name(tool_record.tool_name) == normalized_tool_name
+                    )
+                )
+            ]
+            if len(sanitized_matches) == 1:
+                return sanitized_matches[0]
+
+        if normalized_tool_name:
+            running_name_matches = [
+                existing_id
+                for existing_id, tool_record in tool_records.items()
+                if (
+                    tool_record.status == ToolCallStatus.RUNNING
+                    and _normalize_tool_name(tool_record.tool_name) == normalized_tool_name
+                )
+            ]
+            if len(running_name_matches) == 1:
+                return running_name_matches[0]
+
+        if tool_id:
+            return str(tool_id)
+
+        return f"tool_{uuid.uuid4().hex}"
+
+    def should_track_subagent_namespace(namespace: tuple[Any, ...]) -> bool:
+        namespace_parts = _flatten_namespace_parts(namespace)
+        if any(part == "tools" or part.startswith("tools:") for part in namespace_parts):
+            return False
+        if namespace in namespace_to_subagent_id:
+            return True
+        if not pending_subagent_tool_ids:
+            return False
+        return True
+
+    try:
+        cached_reply = _find_recent_duplicate_reply(
+            conv_id,
+            user_message,
+            selected_skill_name,
+            selected_skill_metadata.get("selected_skill_revision"),
+            db,
+        )
+        if cached_reply is not None:
+            user_record = ClawMessage(
+                conversation_id=str(conv_id),
+                role=MessageRole.USER,
+                content=user_message,
+                extra_data=selected_skill_metadata,
+            )
+            assistant_message = ClawMessage(
+                conversation_id=str(conv_id),
+                role=MessageRole.ASSISTANT,
+                content=cached_reply.content,
+                extra_data={
+                    "cache_hit": True,
+                    "cached_from_message_id": cached_reply.id,
+                    "cache_window_seconds": int(REPEAT_QUERY_CACHE_WINDOW.total_seconds()),
+                },
+            )
+            db.add(user_record)
+            db.add(assistant_message)
+            touch_conversation()
+            db.commit()
+            db.refresh(assistant_message)
+
+            yield _sse_event(
+                "text",
+                message_id=assistant_message.id,
+                content=cached_reply.content,
+            )
+            yield _sse_event("done")
+            return
+
+        user_record = ClawMessage(
+            conversation_id=str(conv_id),
+            role=MessageRole.USER,
+            content=user_message,
+            extra_data=selected_skill_metadata,
+        )
+        assistant_message = ClawMessage(
+            conversation_id=str(conv_id),
+            role=MessageRole.ASSISTANT,
+            content="",
+            extra_data={},
+        )
+        db.add(user_record)
+        db.add(assistant_message)
+        touch_conversation()
+        db.commit()
+        db.refresh(assistant_message)
+
+        prompt_bundle = _ensure_conversation_prompt_snapshot(conversation, db)
+
         agent = create_claw_agent(
             working_directory=conversation.working_directory,
             llm_model=conversation.llm_model,
             conversation_id=str(conv_id),
-            custom_system_prompt=conversation.system_prompt
+            custom_system_prompt=(
+                get_system_prompt_from_bundle(prompt_bundle)
+                or conversation.system_prompt
+            ),
+            prompt_overrides=build_deep_agent_prompt_overrides(prompt_bundle),
+            turn_instruction=(
+                _build_selected_skill_turn_instruction(selected_skill)
+                if selected_skill is not None
+                else None
+            ),
         )
 
-        # 流式执行 Agent
-        assistant_content = ""
-        tool_calls_data = []
+        input_data = {"messages": [{"role": "user", "content": user_message}]}
 
-        # 准备输入消息
-        input_data = {
-            "messages": [{"role": "user", "content": user_message}]
+        async for chunk in agent.astream(
+            input_data,
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": str(conv_id)}},
+        ):
+            if not isinstance(chunk, tuple) or len(chunk) != 3:
+                continue
+
+            namespace, stream_mode, data = chunk
+            namespace_key = tuple(namespace) if namespace else ()
+
+            if stream_mode == "updates":
+                todos = _find_todos(data)
+                if todos is not None:
+                    item_id = planning_item_id or f"planning:{uuid.uuid4().hex}"
+                    planning_status = _derive_planning_status(todos)
+                    process_event = upsert_process_event(
+                        item_id,
+                        kind="planning",
+                        title="Planning",
+                        status=planning_status,
+                        data={"todos": todos},
+                    )
+                    if planning_item_id is None:
+                        planning_item_id = item_id
+                        persist_stream_snapshot()
+                        yield _sse_event(
+                            "planning_started",
+                            item_id=process_event.id,
+                            title=process_event.title,
+                            status=process_event.status,
+                            todos=todos,
+                        )
+                    else:
+                        persist_stream_snapshot()
+                    yield _sse_event(
+                        "planning_updated",
+                        item_id=process_event.id,
+                        status=process_event.status,
+                        todos=todos,
+                    )
+                    continue
+
+                if namespace_key:
+                    bound_item_id = namespace_to_subagent_id.get(namespace_key)
+                    process_event = process_events.get(bound_item_id) if bound_item_id else None
+                    if process_event is not None:
+                        current_data = dict(process_event.data or {})
+                        current_data["state"] = _jsonable(data)
+                        process_event = upsert_process_event(
+                            process_event.id,
+                            kind="subagent",
+                            title=process_event.title,
+                            status=process_event.status,
+                            data=current_data,
+                        )
+                        persist_stream_snapshot()
+                        yield _sse_event(
+                            "subagent_updated",
+                            item_id=process_event.id,
+                            tool_id=current_data.get("tool_id"),
+                            status=process_event.status,
+                            state=current_data.get("state"),
+                        )
+                continue
+
+            if stream_mode != "messages":
+                continue
+
+            if not isinstance(data, tuple) or len(data) != 2:
+                continue
+
+            message, _metadata = data
+
+            if namespace_key:
+                if isinstance(message, AIMessage) and should_track_subagent_namespace(namespace_key):
+                    process_event, created = ensure_subagent_binding(namespace_key)
+                    for block in _iter_content_blocks(message):
+                        if block.get("type") != "text":
+                            continue
+                        text = block.get("text", "")
+                        if not text:
+                            continue
+
+                        event_data = dict(process_event.data or {})
+                        transcript = f"{event_data.get('transcript', '')}{text}"
+                        event_data["transcript"] = transcript
+                        process_event = upsert_process_event(
+                            process_event.id,
+                            kind="subagent",
+                            title=process_event.title,
+                            status="running",
+                            data=event_data,
+                        )
+                        persist_stream_snapshot()
+                        if created:
+                            yield _sse_event(
+                                "subagent_started",
+                                item_id=process_event.id,
+                                title=process_event.title,
+                                tool_id=event_data.get("tool_id"),
+                                status=process_event.status,
+                            )
+                            created = False
+                        yield _sse_event(
+                            "subagent_updated",
+                            item_id=process_event.id,
+                            tool_id=event_data.get("tool_id"),
+                            status=process_event.status,
+                            delta=text,
+                            transcript=transcript,
+                        )
+                continue
+
+            if isinstance(message, AIMessage):
+                content_blocks = _iter_content_blocks(message)
+                tool_call_chunk_blocks = _tool_call_chunk_blocks_from_message(
+                    message,
+                    content_blocks,
+                )
+                tool_call_blocks = _tool_call_blocks_from_message(
+                    message,
+                    [*content_blocks, *tool_call_chunk_blocks],
+                )
+                additional_tool_call_blocks = _tool_call_blocks_from_additional_kwargs(
+                    message,
+                    [*content_blocks, *tool_call_chunk_blocks, *tool_call_blocks],
+                )
+                for block in [
+                    *content_blocks,
+                    *tool_call_chunk_blocks,
+                    *tool_call_blocks,
+                    *additional_tool_call_blocks,
+                ]:
+                    block_type = block.get("type")
+
+                    if block_type == "text":
+                        text = block.get("text", "")
+                        if not text:
+                            continue
+                        assistant_fragments.append(text)
+                        append_timeline_text(text)
+                        persist_stream_snapshot()
+                        yield _sse_event(
+                            "text",
+                            message_id=assistant_message.id,
+                            content=text,
+                        )
+                        continue
+
+                    if block_type not in {"tool_call_chunk", "tool_call"}:
+                        continue
+
+                    buffer_key = (
+                        block.get("index")
+                        if block.get("index") is not None
+                        else block.get("id") or f"buffer:{len(tool_call_buffers)}"
+                    )
+                    buffer = tool_call_buffers.setdefault(
+                        buffer_key,
+                        {"id": None, "name": None, "args": None, "raw_args": "", "started": False},
+                    )
+
+                    if block.get("id"):
+                        buffer["id"] = block["id"]
+                    if block.get("name"):
+                        buffer["name"] = block["name"]
+
+                    chunk_args = block.get("args")
+                    tool_id = str(buffer.get("id") or buffer_key)
+
+                    logger.debug(f"Processing tool_call chunk: tool_name={buffer.get('name')}, chunk_args type={type(chunk_args)}, chunk_args={repr(chunk_args) if isinstance(chunk_args, str) else chunk_args}")
+
+                    if isinstance(chunk_args, str):
+                        if chunk_args:
+                            parsed_chunk_args = _parse_tool_call_args_dict(chunk_args)
+                            if parsed_chunk_args is not None:
+                                buffer["args"] = _merge_tool_call_args(
+                                    buffer.get("args"),
+                                    parsed_chunk_args,
+                                )
+                                buffer["raw_args"] = ""
+                            else:
+                                raw_args = _merge_tool_call_arg_text(
+                                    str(buffer.get("raw_args") or ""),
+                                    chunk_args,
+                                )
+                                buffer["raw_args"] = raw_args
+                                partial_args = _normalize_partial_tool_call_args(
+                                    raw_args,
+                                    buffer.get("name") or "",
+                                )
+                                if partial_args is not None:
+                                    buffer["args"] = _merge_tool_call_args(
+                                        buffer.get("args"),
+                                        partial_args,
+                                    )
+                            logger.debug(
+                                "Accumulated string args: %r",
+                                repr(buffer.get("raw_args") or buffer.get("args"))[:200],
+                            )
+                            yield _sse_event(
+                                "tool_call_delta",
+                                tool_id=tool_id,
+                                tool_name=buffer.get("name"),
+                                delta=chunk_args,
+                            )
+                    elif chunk_args is not None:
+                        logger.debug(f"Merging dict args: existing={buffer.get('args')}, new={chunk_args}")
+                        buffer["args"] = _merge_tool_call_args(buffer.get("args"), chunk_args)
+
+                    tool_name = buffer.get("name")
+                    normalized_tool_name = _normalize_tool_name(tool_name)
+                    parsed_args = _normalize_tool_call_args(buffer.get("args"), tool_name)
+                    raw_args = buffer.get("raw_args")
+                    if isinstance(raw_args, str) and raw_args.strip():
+                        raw_parsed_args = _normalize_partial_tool_call_args(raw_args, tool_name)
+                        if raw_parsed_args is not None:
+                            parsed_args = (
+                                _merge_tool_call_args(parsed_args, raw_parsed_args)
+                                if parsed_args is not None
+                                else raw_parsed_args
+                            )
+                    if parsed_args is None and normalized_tool_name in SHELL_TOOL_NAMES:
+                        parsed_args = _extract_shell_input_from_raw_args(buffer.get("args"))
+                    if parsed_args is None and normalized_tool_name in SHELL_TOOL_NAMES:
+                        parsed_args = _extract_shell_input_from_raw_args(raw_args)
+                    if not tool_name or parsed_args is None:
+                        continue
+                    buffer["id"] = tool_id
+                    buffer["args"] = parsed_args
+
+                    if buffer.get("started"):
+                        tool_record = tool_records.get(tool_id)
+                        normalized_args = _jsonable(parsed_args)
+                        if tool_record is None or tool_record.tool_input == normalized_args:
+                            continue
+
+                        tool_record = ensure_tool_record(tool_id, tool_name, parsed_args)
+
+                        if normalized_tool_name in SHELL_TOOL_NAMES:
+                            item_id = f"shell:{tool_record.id}"
+                            current_event = process_events.get(item_id)
+                            if current_event is not None:
+                                command = _derive_shell_command(parsed_args)
+                                current_data = dict(current_event.data or {})
+                                current_data.update(
+                                    {
+                                        "tool_id": tool_record.id,
+                                        "tool_name": tool_name,
+                                        "input": tool_record.tool_input,
+                                    }
+                                )
+                                if command:
+                                    current_data["command"] = command
+
+                                current_event = upsert_process_event(
+                                    item_id,
+                                    kind="shell",
+                                    title=command or current_event.title or tool_name,
+                                    status=current_event.status,
+                                    data=current_data,
+                                )
+                                persist_stream_snapshot()
+                                yield _sse_event(
+                                    "shell_started",
+                                    item_id=current_event.id,
+                                    tool_id=tool_record.id,
+                                    tool_name=tool_name,
+                                    command=current_data.get("command", ""),
+                                    tool_input=tool_record.tool_input,
+                                )
+                        elif (
+                            normalized_tool_name not in PLANNING_TOOL_NAMES
+                            and normalized_tool_name not in SUBAGENT_TOOL_NAMES
+                        ):
+                            persist_stream_snapshot()
+                            yield _sse_event(
+                                "tool_call_started",
+                                tool_id=tool_record.id,
+                                tool_name=tool_record.tool_name,
+                                tool_input=tool_record.tool_input,
+                            )
+                        continue
+
+                    buffer["started"] = True
+
+                    tool_record = ensure_tool_record(tool_id, tool_name, parsed_args)
+
+                    if normalized_tool_name in SHELL_TOOL_NAMES:
+                        command = _derive_shell_command(parsed_args)
+                        process_event = upsert_process_event(
+                            f"shell:{tool_record.id}",
+                            kind="shell",
+                            title=command or tool_name,
+                            status="running",
+                            data={
+                                "tool_id": tool_record.id,
+                                "tool_name": tool_name,
+                                "input": tool_record.tool_input,
+                                "command": command,
+                                "stdout": "",
+                                "stderr": "",
+                            },
+                        )
+                        append_timeline_item("shell", item_id=process_event.id, tool_id=tool_record.id)
+                    elif normalized_tool_name in PLANNING_TOOL_NAMES:
+                        todos = _jsonable(parsed_args.get("todos", []))
+                        planning_item_id = f"planning:{tool_record.id}"
+                        process_event = upsert_process_event(
+                            planning_item_id,
+                            kind="planning",
+                            title="Planning",
+                            status=_derive_planning_status(todos),
+                            data={"tool_id": tool_record.id, "todos": todos},
+                        )
+                        append_timeline_item("planning", item_id=process_event.id, tool_id=tool_record.id)
+                    elif normalized_tool_name in SUBAGENT_TOOL_NAMES:
+                        item_id = f"subagent:{tool_record.id}"
+                        pending_subagent_tool_ids.append(tool_record.id)
+                        process_event = upsert_process_event(
+                            item_id,
+                            kind="subagent",
+                            title=_derive_subagent_title(parsed_args),
+                            status="running",
+                            data={
+                                "tool_id": tool_record.id,
+                                "tool_name": tool_name,
+                                "input": tool_record.tool_input,
+                                "transcript": "",
+                                "result": None,
+                            },
+                        )
+                        append_timeline_item("subagent", item_id=process_event.id, tool_id=tool_record.id)
+                    else:
+                        append_timeline_item("tool", tool_id=tool_record.id)
+
+                    persist_stream_snapshot()
+                    yield _sse_event(
+                        "tool_call_started",
+                        tool_id=tool_record.id,
+                        tool_name=tool_record.tool_name,
+                        tool_input=tool_record.tool_input,
+                    )
+
+                    if normalized_tool_name in SHELL_TOOL_NAMES:
+                        yield _sse_event(
+                            "shell_started",
+                            item_id=process_event.id,
+                            tool_id=tool_record.id,
+                            tool_name=tool_name,
+                            command=command,
+                            tool_input=tool_record.tool_input,
+                        )
+                    elif normalized_tool_name in PLANNING_TOOL_NAMES:
+                        yield _sse_event(
+                            "planning_started",
+                            item_id=process_event.id,
+                            title=process_event.title,
+                            status=process_event.status,
+                            todos=todos,
+                        )
+                    elif normalized_tool_name in SUBAGENT_TOOL_NAMES:
+                        yield _sse_event(
+                            "subagent_started",
+                            item_id=process_event.id,
+                            tool_id=tool_record.id,
+                            title=process_event.title,
+                            status=process_event.status,
+                        )
+
+                continue
+
+            if not isinstance(message, ToolMessage):
+                continue
+
+            tool_id = resolve_tool_id(message)
+            tool_name = getattr(message, "name", None) or tool_records.get(tool_id, None)
+            tool_name = tool_name.tool_name if isinstance(tool_name, ClawToolCall) else tool_name or "tool"
+            normalized_tool_name = _normalize_tool_name(tool_name)
+            tool_record = tool_records.get(tool_id) or ensure_tool_record(tool_id, tool_name, {})
+            tool_input = _merge_tool_input_from_message(tool_name, tool_record.tool_input, message)
+            tool_output = _extract_tool_output(message)
+            tool_status = "success" if getattr(message, "status", "success") == "success" else "failed"
+            shell_payload = None
+
+            if normalized_tool_name in SHELL_TOOL_NAMES:
+                shell_payload = _extract_shell_payload(message, tool_input)
+                exit_code = shell_payload.get("exit_code")
+                if isinstance(exit_code, int) and exit_code != 0:
+                    tool_status = "failed"
+                if not _derive_shell_command(tool_input):
+                    shell_command = shell_payload.get("command")
+                    if isinstance(shell_command, str) and shell_command:
+                        tool_input = {**tool_input, "command": shell_command}
+                if not _derive_shell_command(tool_input):
+                    warning_payload = {
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "tool_input": _jsonable(tool_input),
+                        "message_additional_kwargs": _jsonable(
+                            getattr(message, "additional_kwargs", None)
+                        ),
+                        "message_artifact": _jsonable(getattr(message, "artifact", None)),
+                        "message_content_preview": _stringify(getattr(message, "content", None))[:500],
+                    }
+                    logger.warning(
+                        "Shell tool completed without captured command: %s",
+                        json.dumps(warning_payload, ensure_ascii=False),
+                    )
+
+            tool_record.tool_name = tool_name
+            tool_record.tool_input = tool_input
+            tool_record.tool_output = tool_output
+            tool_record.status = (
+                ToolCallStatus.SUCCESS if tool_status == "success" else ToolCallStatus.FAILED
+            )
+            tool_record.error = None if tool_status == "success" else _stringify(tool_output)
+            db.flush()
+
+            if normalized_tool_name in SHELL_TOOL_NAMES:
+                item_id = f"shell:{tool_record.id}"
+                current_event = process_events.get(item_id)
+                current_data = dict(current_event.data or {}) if current_event else {}
+                shell_payload = shell_payload or _extract_shell_payload(message, tool_input)
+                current_data.update(shell_payload)
+                current_data["tool_id"] = tool_record.id
+                current_data["tool_name"] = tool_name
+                current_data["input"] = tool_record.tool_input
+                current_event = upsert_process_event(
+                    item_id,
+                    kind="shell",
+                    title=current_data.get("command") or tool_name,
+                    status=tool_status,
+                    data=current_data,
+                )
+                persist_stream_snapshot()
+                yield _sse_event(
+                    "tool_call_completed",
+                    tool_id=tool_record.id,
+                    tool_name=tool_record.tool_name,
+                    tool_input=tool_record.tool_input,
+                    status=tool_status,
+                    output=tool_output,
+                    error=tool_record.error,
+                )
+
+                stdout = _stringify(current_data.get("stdout"))
+                stderr = _stringify(current_data.get("stderr"))
+                if stdout:
+                    yield _sse_event(
+                        "shell_output",
+                        item_id=current_event.id,
+                        tool_id=tool_record.id,
+                        stream="stdout",
+                        output=stdout,
+                        command=current_data.get("command"),
+                    )
+                if stderr:
+                    yield _sse_event(
+                        "shell_output",
+                        item_id=current_event.id,
+                        tool_id=tool_record.id,
+                        stream="stderr",
+                        output=stderr,
+                        command=current_data.get("command"),
+                    )
+                yield _sse_event(
+                    "shell_completed",
+                    item_id=current_event.id,
+                    tool_id=tool_record.id,
+                    status=tool_status,
+                    exit_code=current_data.get("exit_code"),
+                    command=current_data.get("command"),
+                    tool_input=tool_record.tool_input,
+                    output=tool_output,
+                    error=tool_record.error,
+                )
+                continue
+
+            if normalized_tool_name in PLANNING_TOOL_NAMES:
+                item_id = planning_item_id or f"planning:{tool_record.id}"
+                current_event = process_events.get(item_id)
+                current_data = dict(current_event.data or {}) if current_event else {}
+                todos = current_data.get("todos")
+                if not isinstance(todos, list):
+                    todos = _find_todos(tool_output) or []
+                planning_status = (
+                    _derive_planning_status(todos)
+                    if isinstance(todos, list)
+                    else current_event.status if current_event else "pending"
+                )
+                current_data["tool_id"] = tool_record.id
+                current_data["todos"] = _jsonable(todos)
+                current_data["tool_output"] = tool_output
+                current_event = upsert_process_event(
+                    item_id,
+                    kind="planning",
+                    title=current_event.title if current_event else "Planning",
+                    status=planning_status,
+                    data=current_data,
+                )
+                planning_item_id = item_id
+                persist_stream_snapshot()
+                yield _sse_event(
+                    "tool_call_completed",
+                    tool_id=tool_record.id,
+                    tool_name=tool_record.tool_name,
+                    tool_input=tool_record.tool_input,
+                    status=tool_status,
+                    output=tool_output,
+                    error=tool_record.error,
+                )
+                yield _sse_event(
+                    "planning_updated",
+                    item_id=current_event.id,
+                    status=current_event.status,
+                    todos=current_data["todos"],
+                )
+                continue
+
+            if normalized_tool_name in SUBAGENT_TOOL_NAMES:
+                item_id = f"subagent:{tool_record.id}"
+                current_event = process_events.get(item_id)
+                current_data = dict(current_event.data or {}) if current_event else {}
+                current_data["tool_id"] = tool_record.id
+                current_data["tool_output"] = tool_output
+                current_data["result"] = _stringify(tool_output)
+                current_event = upsert_process_event(
+                    item_id,
+                    kind="subagent",
+                    title=current_event.title if current_event else "Subagent",
+                    status=tool_status,
+                    data=current_data,
+                )
+                persist_stream_snapshot()
+                yield _sse_event(
+                    "tool_call_completed",
+                    tool_id=tool_record.id,
+                    tool_name=tool_record.tool_name,
+                    tool_input=tool_record.tool_input,
+                    status=tool_status,
+                    output=tool_output,
+                    error=tool_record.error,
+                )
+                yield _sse_event(
+                    "subagent_completed",
+                    item_id=current_event.id,
+                    tool_id=tool_record.id,
+                    status=current_event.status,
+                    result=current_data["result"],
+                )
+                continue
+
+            persist_stream_snapshot()
+            yield _sse_event(
+                "tool_call_completed",
+                tool_id=tool_record.id,
+                tool_name=tool_record.tool_name,
+                tool_input=tool_record.tool_input,
+                status=tool_status,
+                output=tool_output,
+                error=tool_record.error,
+            )
+
+        assistant_message.content = "".join(assistant_fragments)
+        assistant_message.extra_data = {
+            "stream_protocol": "claw.v2",
+            "tool_call_count": len(tool_records),
+            "process_event_count": len(process_events),
+            "timeline": _jsonable(timeline_entries),
         }
-
-        # 使用 astream 流式执行
-        logger.info(f"Starting agent stream for conversation {conv_id}")
-        async for chunk in agent.astream(input_data, stream_mode=["messages", "updates"]):
-            # chunk 是元组格式: (stream_mode, data)
-            if isinstance(chunk, tuple) and len(chunk) >= 2:
-                stream_mode, data = chunk[0], chunk[1]
-
-                # 处理消息流
-                if stream_mode == "messages":
-                    # data 是单个消息
-                    message = data
-                    # AI 消息内容
-                    if hasattr(message, "content") and message.content:
-                        content = message.content
-                        assistant_content += content
-                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
-
-                    # 工具调用
-                    if hasattr(message, "tool_calls") and message.tool_calls:
-                        for tool_call in message.tool_calls:
-                            tool_data = {
-                                "id": tool_call.get("id", ""),
-                                "name": tool_call.get("name", ""),
-                                "args": tool_call.get("args", {})
-                            }
-                            tool_calls_data.append(tool_data)
-                            # 前端期望的格式
-                            yield f"data: {json.dumps({
-                                'type': 'tool_call',
-                                'tool_id': tool_data['id'],
-                                'tool_name': tool_data['name'],
-                                'tool_input': tool_data['args']
-                            })}\n\n"
-
-                # 处理更新流（包含模型响应和工具结果）
-                elif stream_mode == "updates":
-                    # 检查是否是模型响应
-                    if isinstance(data, dict) and "model" in data:
-                        model_data = data["model"]
-                        if isinstance(model_data, dict) and "messages" in model_data:
-                            for msg in model_data["messages"]:
-                                # AI 消息内容
-                                if hasattr(msg, "content") and msg.content:
-                                    content = msg.content
-                                    assistant_content += content
-                                    logger.info(f"Yielding text from updates: {content[:100]}")
-                                    yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
-
-                                # 工具调用
-                                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                                    for tool_call in msg.tool_calls:
-                                        tool_data = {
-                                            "id": tool_call.get("id", ""),
-                                            "name": tool_call.get("name", ""),
-                                            "args": tool_call.get("args", {})
-                                        }
-                                        tool_calls_data.append(tool_data)
-                                        yield f"data: {json.dumps({
-                                            'type': 'tool_call',
-                                            'tool_id': tool_data['id'],
-                                            'tool_name': tool_data['name'],
-                                            'tool_input': tool_data['args']
-                                        })}\n\n"
-
-                    # data 是 (node_name, node_state) 元组 - 工具结果
-                    elif isinstance(data, tuple) and len(data) >= 2:
-                        node_name, node_state = data[0], data[1]
-                        if isinstance(node_state, dict) and "messages" in node_state:
-                            for msg in node_state["messages"]:
-                                # 工具结果
-                                if hasattr(msg, "name") and msg.name:
-                                    # 前端期望的格式
-                                    yield f"data: {json.dumps({
-                                        'type': 'tool_result',
-                                        'tool_name': msg.name,
-                                        'status': 'success',
-                                        'output': str(msg.content)[:500]
-                                    })}\n\n"
-
-        # 保存 Assistant 消息
-        assistant_msg = ClawMessage(
-            conversation_id=str(conv_id),
-            role=MessageRole.ASSISTANT,
-            content=assistant_content or "Agent 已完成任务",
-            extra_data={"tool_calls": tool_calls_data}
-        )
-        db.add(assistant_msg)
+        touch_conversation()
         db.commit()
 
-        # 发送完成信号
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-    except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
-        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        yield _sse_event("done")
+    except Exception as exc:
+        logger.error("Chat error", exc_info=True)
+        db.rollback()
+        yield _sse_event("error", message=str(exc))
 
 
 @router.post("/conversations/{conv_id}/chat")
 async def chat_with_agent(
     conv_id: UUID,
     message: MessageCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """与 Deep Agent 对话（SSE 流式）"""
-    # 获取对话
     conversation = db.query(ClawConversation).filter_by(id=str(conv_id)).first()
     if not conversation:
-        raise HTTPException(status_code=404, detail="对话不存在")
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # 返回 SSE 流
+    message_content = message.content.strip()
+    selected_skill_name: str | None = None
+
+    if message.selected_skill:
+        try:
+            selected_skill_name = resolve_skill_reference(
+                message.selected_skill,
+                enabled_only=True,
+            )["name"]
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=exc.args[0]) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        try:
+            selected_skill, message_content = extract_slash_skill_command(
+                message_content,
+                enabled_only=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if selected_skill is not None:
+            selected_skill_name = selected_skill["name"]
+
+    if not message_content:
+        raise HTTPException(status_code=400, detail="Message content cannot be empty.")
+
     return StreamingResponse(
-        chat_event_generator(conv_id, message.content, conversation, db),
+        chat_event_generator(
+            conv_id,
+            message_content,
+            conversation,
+            db,
+            selected_skill_name=selected_skill_name,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
-        }
+            "X-Accel-Buffering": "no",
+        },
     )

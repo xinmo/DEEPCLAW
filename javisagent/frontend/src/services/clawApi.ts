@@ -1,129 +1,268 @@
 import type {
   ClawConversation,
+  ClawSkillDetail,
+  ClawSkillsStats,
+  ClawSkillSummary,
   ClawMessage,
+  ClawMessageMetadata,
   ConversationCreate,
   ConversationUpdate,
   MessageCreate,
   ModelInfo,
-  SSEEvent
-} from '../types/claw';
+  ProcessEvent,
+  SSEEvent,
+  ToolCall,
+} from "../types/claw";
 
-const API_BASE = '/api/claw';
+const API_BASE = "/api/claw";
+
+interface RawToolCall {
+  id: string;
+  tool_name: string;
+  tool_input: unknown;
+  tool_output?: unknown;
+  status: "running" | "success" | "failed";
+  duration?: number;
+  error?: string;
+}
+
+interface RawProcessEvent {
+  id: string;
+  kind: ProcessEvent["kind"];
+  title: string;
+  status: ProcessEvent["status"];
+  sequence: number;
+  data: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RawClawMessage {
+  id: string;
+  role: ClawMessage["role"];
+  content: string;
+  metadata?: ClawMessageMetadata;
+  tool_calls?: RawToolCall[];
+  process_events?: RawProcessEvent[];
+  created_at: string;
+}
+
+function normalizeToolCall(raw: RawToolCall): ToolCall {
+  return {
+    id: raw.id,
+    toolName: raw.tool_name,
+    status: raw.status,
+    input: raw.tool_input,
+    output: raw.tool_output,
+    duration: raw.duration,
+    error: raw.error,
+  };
+}
+
+function normalizeProcessEvent(raw: RawProcessEvent): ProcessEvent {
+  return {
+    id: raw.id,
+    kind: raw.kind,
+    title: raw.title,
+    status: raw.status,
+    sequence: raw.sequence,
+    data: raw.data || {},
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+  };
+}
+
+function normalizeMessage(raw: RawClawMessage): ClawMessage {
+  return {
+    id: raw.id,
+    role: raw.role,
+    content: raw.content,
+    metadata: raw.metadata || {},
+    toolCalls: (raw.tool_calls || []).map(normalizeToolCall),
+    processEvents: (raw.process_events || []).map(normalizeProcessEvent),
+    isStreaming: false,
+    timestamp: new Date(raw.created_at),
+  };
+}
+
+async function expectJson<T>(response: Response, errorMessage: string): Promise<T> {
+  if (!response.ok) {
+    throw new Error(errorMessage);
+  }
+  return response.json() as Promise<T>;
+}
+
+function parseSseChunk(chunk: string, onEvent: (event: SSEEvent) => void) {
+  const eventBlocks = chunk.split("\n\n");
+  const incomplete = eventBlocks.pop() ?? "";
+
+  for (const block of eventBlocks) {
+    const dataLines = block
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => line.slice(6));
+
+    if (dataLines.length === 0) {
+      continue;
+    }
+
+    try {
+      const payload = JSON.parse(dataLines.join("\n")) as SSEEvent;
+      onEvent(payload);
+    } catch (error) {
+      console.error("[Claw SSE] Failed to parse event block", error, block);
+    }
+  }
+
+  return incomplete;
+}
 
 export const clawApi = {
-  // 对话管理
   async createConversation(data: ConversationCreate): Promise<ClawConversation> {
     const response = await fetch(`${API_BASE}/conversations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
     });
-    if (!response.ok) throw new Error('创建对话失败');
-    return response.json();
+    return expectJson<ClawConversation>(response, "创建对话失败");
   },
 
   async listConversations(): Promise<ClawConversation[]> {
     const response = await fetch(`${API_BASE}/conversations`);
-    if (!response.ok) throw new Error('获取对话列表失败');
-    return response.json();
+    return expectJson<ClawConversation[]>(response, "获取对话列表失败");
   },
 
   async getConversation(id: string): Promise<ClawConversation> {
     const response = await fetch(`${API_BASE}/conversations/${id}`);
-    if (!response.ok) throw new Error('获取对话失败');
-    return response.json();
+    return expectJson<ClawConversation>(response, "获取对话失败");
   },
 
-  async updateConversation(id: string, data: ConversationUpdate): Promise<ClawConversation> {
+  async updateConversation(
+    id: string,
+    data: ConversationUpdate,
+  ): Promise<ClawConversation> {
     const response = await fetch(`${API_BASE}/conversations/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
     });
-    if (!response.ok) throw new Error('更新对话失败');
-    return response.json();
+    return expectJson<ClawConversation>(response, "更新对话失败");
   },
 
   async deleteConversation(id: string): Promise<void> {
     const response = await fetch(`${API_BASE}/conversations/${id}`, {
-      method: 'DELETE'
+      method: "DELETE",
     });
-    if (!response.ok) throw new Error('删除对话失败');
+    if (!response.ok) {
+      throw new Error("删除对话失败");
+    }
   },
 
-  // 消息管理
   async getMessages(convId: string): Promise<ClawMessage[]> {
     const response = await fetch(`${API_BASE}/conversations/${convId}/messages`);
-    if (!response.ok) throw new Error('获取消息失败');
-    return response.json();
+    const rawMessages = await expectJson<RawClawMessage[]>(response, "获取消息失败");
+    return rawMessages.map(normalizeMessage);
   },
 
-  // SSE 聊天
   async sendMessage(
     convId: string,
     message: MessageCreate,
     onEvent: (event: SSEEvent) => void,
-    onError?: (error: Error) => void
+    onError?: (error: Error) => void,
+    signal?: AbortSignal,
   ): Promise<void> {
     const response = await fetch(`${API_BASE}/conversations/${convId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(message)
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+      signal,
     });
 
     if (!response.ok) {
-      throw new Error('发送消息失败');
+      throw new Error("发送消息失败");
     }
 
     const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
-
     if (!reader) {
-      throw new Error('无法读取响应流');
+      throw new Error("无法读取响应流");
     }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
 
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              onEvent(data);
-            } catch (e) {
-              console.error('Failed to parse SSE data:', e);
-            }
-          }
+        if (done) {
+          break;
         }
+
+        buffer += decoder.decode(value, { stream: true });
+        buffer = parseSseChunk(buffer, onEvent);
+      }
+
+      const finalChunk = decoder.decode();
+      if (finalChunk) {
+        buffer += finalChunk;
+      }
+
+      if (buffer.trim()) {
+        parseSseChunk(`${buffer}\n\n`, onEvent);
       }
     } catch (error) {
-      if (onError) {
-        onError(error as Error);
-      }
-      throw error;
+      const eventError = error instanceof Error ? error : new Error(String(error));
+      onError?.(eventError);
+      throw eventError;
+    } finally {
+      reader.releaseLock();
     }
   },
 
-  // 工具方法
-  async validateDirectory(path: string): Promise<{ valid: boolean; reason?: string }> {
+  async validateDirectory(
+    path: string,
+  ): Promise<{ valid: boolean; reason?: string }> {
     const response = await fetch(`${API_BASE}/validate-directory`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
     });
-    if (!response.ok) throw new Error('验证目录失败');
-    return response.json();
+    return expectJson<{ valid: boolean; reason?: string }>(
+      response,
+      "验证目录失败",
+    );
   },
 
   async listModels(): Promise<ModelInfo[]> {
     const response = await fetch(`${API_BASE}/models`);
-    if (!response.ok) throw new Error('获取模型列表失败');
-    const data = await response.json();
+    const data = await expectJson<{ models: ModelInfo[] }>(response, "获取模型列表失败");
     return data.models;
-  }
+  },
+
+  async listSkills(): Promise<{ skills: ClawSkillSummary[]; stats: ClawSkillsStats }> {
+    const response = await fetch(`${API_BASE}/skills`);
+    return expectJson<{ skills: ClawSkillSummary[]; stats: ClawSkillsStats }>(
+      response,
+      "Failed to load skills",
+    );
+  },
+
+  async getSkillDetail(name: string): Promise<ClawSkillDetail> {
+    const response = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`);
+    return expectJson<ClawSkillDetail>(response, "Failed to load skill detail");
+  },
+
+  async updateSkillStatus(
+    name: string,
+    enabled: boolean,
+  ): Promise<{ success: boolean; skill: ClawSkillSummary }> {
+    const response = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}/status`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    return expectJson<{ success: boolean; skill: ClawSkillSummary }>(
+      response,
+      "Failed to update skill status",
+    );
+  },
 };

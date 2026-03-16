@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAVISAGENT is an intelligent document parsing workbench that converts documents and web pages into Markdown using the MinerU API (https://mineru.net). Full-stack app with a React frontend and Python FastAPI backend.
+JAVISAGENT 是一个智能工作台，提供三大核心功能模块：
+1. **智能解析** — 使用 MinerU API 将文档和网页转换为 Markdown
+2. **智能翻译** — 实时语音翻译、声音克隆、会议同传
+3. **智能知识库** — RAG 知识库管理与问答系统
+
+技术栈：React + TypeScript + Vite + Ant Design 前端，Python FastAPI + SQLAlchemy 后端。
 
 ## Development Commands
 
@@ -27,59 +32,149 @@ Vite proxies `/api` requests to `http://localhost:8000`. API docs at `http://loc
 
 ### Environment Setup
 Backend requires a `.env` file in `javisagent/backend/` with:
+
+**文档解析模块：**
 - `MINERU_API_TOKEN` — from https://mineru.net
 - `DATABASE_URL` — defaults to `sqlite:///./javisagent.db`
 
+**翻译模块：**
+- `ELEVENLABS_API_KEY` — ElevenLabs 语音合成/克隆
+- `XFYUN_APP_ID`, `XFYUN_API_KEY`, `XFYUN_API_SECRET` — 科大讯飞 ASR/翻译
+
+**知识库模块：**
+- `MILVUS_HOST`, `MILVUS_PORT` — Milvus 向量数据库 (默认 localhost:19530)
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL` — OpenAI Embedding & LLM
+- `ANTHROPIC_API_KEY` — Claude LLM
+- `ZHIPU_API_KEY` — 智谱 AI
+- `DASHSCOPE_API_KEY` — 阿里通义
+- `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` — DeepSeek
+
 ## Architecture
 
-### Frontend (React + TypeScript + Vite + Ant Design)
-- `pages/DocumentParsePage.tsx` — Main page, orchestrates the parsing workflow
-- `components/DocumentParse/` — Feature components: `FileUpload`, `FilePreview`, `MarkdownViewer`, `TaskList`
-- `components/Layout/` — `AppLayout` and `SideMenu`
-- `services/api.ts` — Centralized axios client for all backend calls
+### Frontend Structure
+```
+src/
+├── pages/
+│   ├── DocumentParsePage.tsx    # 文档解析页面
+│   ├── RealtimeTranslatePage.tsx # 实时翻译页面
+│   ├── KnowledgeBasePage.tsx    # 知识库管理页面
+│   └── KnowledgeChatPage.tsx    # 知识问答页面
+├── components/
+│   ├── DocumentParse/           # 文档解析组件
+│   │   ├── FileUpload.tsx
+│   │   ├── FilePreview.tsx
+│   │   ├── MarkdownViewer.tsx
+│   │   └── TaskList.tsx
+│   ├── Translate/               # 翻译组件
+│   │   ├── VoiceClone.tsx       # 声音克隆
+│   │   ├── TextToSpeech.tsx     # 文字转语音
+│   │   └── MeetingMode.tsx      # 会议翻译模式
+│   └── Layout/
+│       ├── AppLayout.tsx
+│       └── SideMenu.tsx
+├── services/
+│   ├── api.ts                   # 文档解析 API
+│   ├── translateApi.ts          # 翻译 API
+│   └── knowledgeApi.ts          # 知识库 API
+├── hooks/
+│   ├── useWebSocket.ts          # WebSocket 连接
+│   └── useAudioPlayer.ts        # 音频播放
+└── types/
+    ├── translate.ts             # 翻译类型定义
+    └── knowledge.ts             # 知识库类型定义
+```
 
-### Backend (FastAPI + SQLAlchemy + SQLite)
-- `src/main.py` — Entry point, starts uvicorn
-- `src/app.py` — FastAPI app setup, CORS config, router registration
-- `src/routes/document.py` — All document parsing endpoints
-- `src/services/mineru.py` — MinerU API client (task creation, status polling, result fetching)
-- `src/models/task.py` — SQLAlchemy `Task` model
-- `src/schemas/task.py` — Pydantic request/response schemas
-- `src/utils/file_handler.py` — File upload handling with UUID-based IDs
+### Backend Structure
+```
+src/
+├── main.py                      # Entry point
+├── app.py                       # FastAPI app, CORS, routers
+├── routes/
+│   ├── document.py              # 文档解析路由
+│   ├── translate/               # 翻译路由
+│   │   ├── clone.py             # 声音克隆 API
+│   │   └── ws.py                # WebSocket 实时翻译
+│   └── knowledge/               # 知识库路由
+│       ├── kb.py                # 知识库 CRUD
+│       ├── documents.py         # 文档管理
+│       └── chat.py              # 问答聊天 (SSE 流式)
+├── services/
+│   ├── mineru.py                # MinerU API 客户端
+│   ├── translate/               # 翻译服务
+│   │   ├── config.py            # 翻译配置
+│   │   ├── elevenlabs.py        # ElevenLabs TTS/克隆
+│   │   ├── xfyun_asr.py         # 讯飞语音识别
+│   │   ├── xfyun_translate.py   # 讯飞翻译
+│   │   └── meeting.py           # 会议模式逻辑
+│   └── knowledge/               # 知识库服务
+│       ├── config.py            # 知识库配置
+│       ├── embedding.py         # 向量嵌入
+│       ├── vector_store.py      # Milvus 向量存储
+│       ├── retriever.py         # 检索器
+│       ├── llm.py               # LLM 调用
+│       └── document_processor.py # 文档处理/切片
+├── models/
+│   ├── task.py                  # 解析任务模型
+│   └── knowledge.py             # 知识库/文档/对话模型
+├── schemas/
+│   ├── task.py                  # 解析任务 Schema
+│   ├── translate.py             # 翻译 Schema
+│   └── knowledge.py             # 知识库 Schema
+├── audio/
+│   ├── vad.py                   # 语音活动检测
+│   └── segmenter.py             # 音频分段
+└── utils/
+    └── file_handler.py          # 文件处理
+```
 
-### Data Flow
-1. User uploads a file → `POST /api/document/upload` → saved with UUID filename
-2. User triggers parse → `POST /api/document/parse` → creates MinerU task via their API
-3. Frontend polls `GET /api/document/task/{task_id}` every 2 seconds for progress
-4. MinerU returns parsed Markdown → displayed in `MarkdownViewer`
+## Module Details
 
-### MinerU API Integration (see API.txt for full reference)
+### 1. 智能解析模块
+
+**数据流：**
+1. 用户上传文件 → `POST /api/document/upload` → UUID 文件名保存
+2. 触发解析 → `POST /api/document/parse` → 创建 MinerU 任务
+3. 前端轮询 `GET /api/document/task/{task_id}` 获取进度
+4. 解析完成 → Markdown 展示在 `MarkdownViewer`
+
+**MinerU API：**
 - Base URL: `https://mineru.net/api/v4`
-- Auth: `Authorization: Bearer {token}` header on all requests
+- 支持 URL 直接解析和文件上传解析两种模式
+- 支持格式：PDF, DOC, DOCX, PPT, PPTX, PNG, JPG, HTML
+- 限制：200MB/文件，600页/文件，2000页/天
 
-**Two parsing flows:**
+### 2. 智能翻译模块
 
-1. **URL 直接解析** (for publicly accessible URLs):
-   - `POST /extract/task` with `{"url": "...", "model_version": "vlm"}` → returns `task_id`
-   - `GET /extract/task/{task_id}` → poll until `state=done`, then get `full_zip_url`
-   - For HTML URLs, `model_version` must be `"MinerU-HTML"`
+**功能：**
+- **声音克隆** — 上传音频样本，克隆用户声音
+- **文字转语音** — 使用克隆声音或预设声音合成语音
+- **会议翻译** — 实时中英双向翻译，支持双人会议模式
 
-2. **文件上传解析** (for local files):
-   - `POST /file-urls/batch` with `{"files": [{"name": "file.pdf", "data_id": "..."}], "model_version": "vlm"}` → returns `batch_id` + `file_urls` (pre-signed upload URLs)
-   - `PUT file_url` with raw file bytes (no Content-Type header needed)
-   - System auto-submits parse task after upload — do NOT call `/extract/task` again
-   - `GET /extract-results/batch/{batch_id}` → poll until `state=done`, then get `full_zip_url`
+**技术实现：**
+- WebSocket 实时通信
+- 科大讯飞 ASR 语音识别 + 翻译
+- ElevenLabs TTS 语音合成
+- VAD 语音活动检测
 
-**Task states:** `pending` → `running` → `done` / `failed` (also: `waiting-file`, `converting`)
+### 3. 智能知识库模块
 
-**Result:** `full_zip_url` points to a ZIP containing Markdown + images. Download and extract to get the parsed content.
+**功能：**
+- 知识库 CRUD 管理
+- 文档上传与自动切片 (支持 PDF, DOC, DOCX, TXT, MD)
+- RAG 检索增强问答
+- SSE 流式响应
+- 多轮对话持久化
 
-**Limits:** 200MB per file, 600 pages max, 2000 pages/day at high priority
+**技术实现：**
+- Milvus 向量数据库存储
+- 多 Embedding 模型支持 (OpenAI, 智谱等)
+- 多 LLM 支持 (GPT-4o, Claude, DeepSeek, 通义等)
+- 文档切片：500 字符/块，100 字符重叠
 
-**model_version options:** `pipeline` (default), `vlm`, `MinerU-HTML` (required for HTML files)
+## Key Patterns
 
-### Key Patterns
-- State management is local React state (no Redux/Context)
-- Task statuses: `PENDING` → `RUNNING` → `COMPLETED` / `FAILED`
-- Frontend uses Ant Design's grid system with 6-18 column layout split
-- Supported formats: PDF, DOC, DOCX, PPT, PPTX, PNG, JPG, HTML
+- 状态管理：本地 React state (无 Redux/Context)
+- 任务状态：`PENDING` → `RUNNING` → `COMPLETED` / `FAILED`
+- 前端布局：Ant Design Grid，可折叠侧边栏
+- 实时通信：WebSocket (翻译)，SSE (知识问答)
+- 文件命名：UUID-based
