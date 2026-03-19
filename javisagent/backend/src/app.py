@@ -6,6 +6,7 @@ from src.models.channels import ChannelConfig, ChannelSession
 from src.models.claw import ClawConversation, ClawMessage, ClawToolCall
 from src.models.knowledge import Conversation, KBDocument, KnowledgeBase, Message
 from src.models.task import Task
+from src.models.industry_research import DeepResearch, IndustryEdge, IndustryNode, IndustryResearch
 from src.routes import document
 from src.routes.channels import router as channels_router
 from src.routes.claw import conversations_router, chat_router as claw_chat_router, skills_router
