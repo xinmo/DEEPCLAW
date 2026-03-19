@@ -1,4 +1,5 @@
 export type ResearchDepth = 'quick' | 'standard' | 'deep';
+export type ResearchStatus = 'running' | 'completed' | 'failed';
 export type ResearchView = 'home' | 'dashboard' | 'graph' | 'deep';
 export type AgentStatusType = 'running' | 'waiting' | 'done';
 export type NodeStatus = 'done' | 'in_progress' | 'pending';
@@ -47,7 +48,7 @@ export interface ResearchHistory {
   id: string;
   query: string;
   depth: ResearchDepth;
-  status: 'running' | 'completed' | 'failed';
+  status: ResearchStatus;
   progress?: number;
   nodeCount?: number;
   companyCount?: number;
