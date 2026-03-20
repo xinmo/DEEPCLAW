@@ -11,12 +11,24 @@ export interface LogEntry {
   message: string;
 }
 
+export interface GraphCompany {
+  name: string;
+  country?: string;
+  marketShare?: number;
+  exchange?: string;
+}
+
 export interface GraphNode {
   id: string;
   label: string;
-  companies: string[];
+  layer?: string;
+  companies: GraphCompany[];
   competitionType: "domestic" | "foreign" | "balanced" | string;
+  nationalizationRate?: number;
   status: "pending" | "in_progress" | "done";
+  overview?: string;
+  upstreamDeps?: string[];
+  latestNews?: string[];
 }
 
 export interface GraphEdge {
