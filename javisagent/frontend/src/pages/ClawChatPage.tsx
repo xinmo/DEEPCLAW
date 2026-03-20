@@ -1186,7 +1186,7 @@ const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
           {attachedImages.length > 0 && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: 8 }}>
               {attachedImages.map((url, idx) => (
-                <div key={idx} style={{ position: "relative", display: "inline-block" }}>
+                <div key={url} style={{ position: "relative", display: "inline-block" }}>
                   <img
                     src={url}
                     alt={`附件${idx + 1}`}
