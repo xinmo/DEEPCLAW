@@ -29,8 +29,17 @@ class ConversationResponse(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    content: str = Field(..., min_length=1)
+    content: str | list = Field(...)
     selected_skill: str | None = None
+
+    @field_validator("content")
+    @classmethod
+    def content_not_empty(cls, v: str | list) -> str | list:
+        if isinstance(v, str) and not v.strip():
+            raise ValueError("content must not be empty")
+        if isinstance(v, list) and len(v) == 0:
+            raise ValueError("content list must not be empty")
+        return v
 
 
 class ToolCallInfo(BaseModel):
