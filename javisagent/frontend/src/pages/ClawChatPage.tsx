@@ -23,6 +23,7 @@ import {
   FolderOutlined,
   MenuOutlined,
   MessageOutlined,
+  PaperClipOutlined,
   PlusOutlined,
   SearchOutlined,
   SendOutlined,
@@ -1142,7 +1143,64 @@ const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
               ))}
             </div>
           ) : null}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => {
+              if (e.target.files) {
+                void handleImageFiles(e.target.files);
+                e.target.value = "";
+              }
+            }}
+          />
+          {attachedImages.length > 0 && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: 8 }}>
+              {attachedImages.map((url, idx) => (
+                <div key={idx} style={{ position: "relative", display: "inline-block" }}>
+                  <img
+                    src={url}
+                    alt={`附件${idx + 1}`}
+                    style={{
+                      width: 64,
+                      height: 64,
+                      objectFit: "cover",
+                      borderRadius: 6,
+                      border: "1px solid #d9d9d9",
+                    }}
+                  />
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<CloseCircleOutlined />}
+                    style={{
+                      position: "absolute",
+                      top: -8,
+                      right: -8,
+                      color: "#ff4d4f",
+                      padding: 0,
+                      minWidth: 20,
+                      height: 20,
+                      lineHeight: "20px",
+                    }}
+                    onClick={() => setAttachedImages((prev) => prev.filter((_, i) => i !== idx))}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <Tooltip title="上传图片（最多4张）">
+              <Button
+                icon={<PaperClipOutlined />}
+                size="small"
+                type="text"
+                disabled={!currentConvId || sending || attachedImages.length >= 4}
+                onClick={() => fileInputRef.current?.click()}
+              />
+            </Tooltip>
             <Input.TextArea
               value={inputValue}
               onChange={(event) => setInputValue(event.target.value)}
@@ -1155,6 +1213,7 @@ const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
                   void handleSendMessage();
                 }
               }}
+              onPaste={handlePaste}
             />
             {sending ? (
               <Button danger icon={<CloseCircleOutlined />} onClick={handleStopMessage}>
