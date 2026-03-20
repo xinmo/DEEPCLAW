@@ -1,5 +1,6 @@
+import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass
@@ -66,3 +67,8 @@ class GraphBuilder:
             "nodes": [n.to_sse_dict() for n in self.nodes.values()],
             "edges": [e.to_sse_dict() for e in self.edges],
         }
+
+
+def make_sse(event_type: str, data: Any) -> str:
+    """Format a single SSE message."""
+    return f"data: {json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)}\n\n"

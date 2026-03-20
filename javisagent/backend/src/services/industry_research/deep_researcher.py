@@ -1,14 +1,11 @@
+import asyncio
 import json
 import logging
-import re
 from collections.abc import AsyncGenerator
-from typing import Any
+
+from src.services.industry_research.graph_builder import make_sse
 
 logger = logging.getLogger(__name__)
-
-
-def _make_sse(event_type: str, data: Any) -> str:
-    return f"data: {json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)}\n\n"
 
 
 async def run_deep_research(
@@ -21,19 +18,21 @@ async def run_deep_research(
         from langchain_anthropic import ChatAnthropic
         from langchain_community.tools import DuckDuckGoSearchRun
     except ImportError as e:
-        yield _make_sse("error", {"message": f"Missing dependency: {e}"})
+        yield make_sse("error", {"message": f"Missing dependency: {e}"})
         return
 
-    model = ChatAnthropic(model_name="claude-sonnet-4-6")
+    model = ChatAnthropic(model_name="claude-sonnet-4-6", timeout=60)
     search_tool = DuckDuckGoSearchRun()
 
-    yield _make_sse("progress", {"percent": 5, "stage": f"开始深度研究 {node_name}"})
+    yield make_sse("progress", {"percent": 5, "stage": f"开始深度研究 {node_name}"})
 
-    market_search = search_tool.run(f"{node_name} 市场份额 全球竞争格局 2025")
-    financial_search = search_tool.run(f"{node_name} A股上市公司 营收 毛利率 2025")
-    material_search = search_tool.run(f"{node_name} 上游原材料 价格趋势 2025")
+    market_search, financial_search, material_search = await asyncio.gather(
+        asyncio.to_thread(search_tool.run, f"{node_name} 市场份额 全球竞争格局 2025"),
+        asyncio.to_thread(search_tool.run, f"{node_name} A股上市公司 营收 毛利率 2025"),
+        asyncio.to_thread(search_tool.run, f"{node_name} 上游原材料 价格趋势 2025"),
+    )
 
-    yield _make_sse("progress", {"percent": 30, "stage": "数据收集完成，提取结构化数据..."})
+    yield make_sse("progress", {"percent": 30, "stage": "数据收集完成，提取结构化数据..."})
 
     data_prompt = f"""对"{node_name}"进行深度研究，基于搜索结果提取结构化数据。
 返回纯 JSON（不要其他文字）：
@@ -52,14 +51,18 @@ async def run_deep_research(
     try:
         data_result = await model.ainvoke(data_prompt)
         data_content = data_result.content if hasattr(data_result, "content") else str(data_result)
-        json_match = re.search(r"\{{[\s\S]*\}}", data_content)
-        if json_match:
-            deep_data = json.loads(json_match.group())
+        start = data_content.find("{")
+        end = data_content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                deep_data = json.loads(data_content[start:end + 1])
+            except json.JSONDecodeError:
+                pass
     except Exception as e:
         logger.warning("Deep data extraction failed: %s", e)
 
-    yield _make_sse("deep_data", deep_data)
-    yield _make_sse("progress", {"percent": 50, "stage": "数据分析完成，生成报告..."})
+    yield make_sse("deep_data", deep_data)
+    yield make_sse("progress", {"percent": 50, "stage": "数据分析完成，生成报告..."})
 
     report_prompt = f"""请为"{node_name}"撰写一份专业的产业深度研究报告（Markdown 格式），包含：
 
@@ -81,10 +84,10 @@ async def run_deep_research(
         async for chunk in model.astream(report_prompt):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
             if content:
-                yield _make_sse("report_chunk", {"chunk": content})
+                yield make_sse("report_chunk", {"chunk": content})
     except Exception as e:
         logger.warning("Report streaming failed: %s", e)
-        yield _make_sse("report_chunk", {"chunk": f"\n\n*报告生成遇到问题：{e}*"})
+        yield make_sse("report_chunk", {"chunk": f"\n\n*报告生成遇到问题：{e}*"})
 
-    yield _make_sse("progress", {"percent": 100, "stage": "深度研究完成"})
-    yield _make_sse("done", {"deepId": deep_id})
+    yield make_sse("progress", {"percent": 100, "stage": "深度研究完成"})
+    yield make_sse("done", {"deepId": deep_id})
