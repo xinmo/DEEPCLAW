@@ -622,6 +622,7 @@ const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
     activeRequestControllersRef.current[conversationId] = controller;
     shouldSnapToBottomRef.current = true;
     setInputValue("");
+    const imagesToSend = attachedImages.length > 0 ? [...attachedImages] : undefined;
     setAttachedImages([]);
     setSelectedSkill(null);
     updateConversationSession(conversationId, (session) => {
@@ -629,6 +630,7 @@ const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
         type: "appendUser",
         content: typeof messageContent === "string" ? messageContent : userMessage,
         selectedSkill: turnSkill ? getPreferredSkillAlias(turnSkill) : undefined,
+        images: imagesToSend,
       });
       const withAssistantTurn = timelineReducer(withUserMessage, { type: "startAssistantTurn" });
 
@@ -785,6 +787,31 @@ const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
               <Spin size="small" />
             ) : (
               <span style={{ color: "#8c8c8c" }}>(empty message)</span>
+            )}
+            {item.images && item.images.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {item.images.map((url, imgIdx) => (
+                  <img
+                    key={url}
+                    src={url}
+                    alt={`图片${imgIdx + 1}`}
+                    style={{
+                      width: 100,
+                      height: 100,
+                      objectFit: "cover",
+                      borderRadius: 6,
+                      border: "1px solid #d9d9d9",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => window.open(url, "_blank")}
+                  />
+                ))}
+              </div>
+            )}
+            {item.hasHistoryImages && (
+              <div style={{ marginTop: 8, color: "#8c8c8c", fontSize: 12 }}>
+                {`[图片 × ${item.imageCount ?? 1}]（图片内容不在历史记录中保存）`}
+              </div>
             )}
             {item.promptDebug ? <PromptDebugPanel snapshot={item.promptDebug} /> : null}
           </div>
