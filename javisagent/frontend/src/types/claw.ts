@@ -1,3 +1,15 @@
+export interface TextContentBlock {
+  type: "text";
+  text: string;
+}
+
+export interface ImageContentBlock {
+  type: "image_url";
+  image_url: { url: string }; // data:image/xxx;base64,...
+}
+
+export type ContentBlock = TextContentBlock | ImageContentBlock;
+
 export interface ClawConversation {
   id: string;
   title: string;
@@ -26,11 +38,69 @@ export interface TimelineSnapshotEntry {
   content?: string;
 }
 
+export interface PromptDebugLayer {
+  id: string;
+  title: string;
+  source: string;
+  content: string;
+}
+
+export interface PromptDebugMessage {
+  role: string;
+  type: string;
+  name?: string | null;
+  content?: unknown;
+  content_text?: string;
+  additional_kwargs?: Record<string, unknown> | null;
+  tool_calls?: unknown;
+}
+
+export interface PromptDebugTool {
+  name: string;
+  description: string;
+  input_schema?: unknown;
+}
+
+export interface PromptDebugSkillSummary {
+  name: string;
+  declared_name?: string;
+  description?: string;
+  aliases?: string[];
+  path?: string;
+}
+
+export interface PromptDebugSnapshot {
+  version: string;
+  captured_at?: string;
+  conversation: {
+    id: string;
+    llm_model: string;
+    working_directory: string;
+  };
+  selected_skill?: PromptDebugSkillSummary | null;
+  prompt_layers: PromptDebugLayer[];
+  captured_request: {
+    system_prompt: string;
+    message_count: number;
+    messages: PromptDebugMessage[];
+    tool_count: number;
+    tools: PromptDebugTool[];
+  };
+  resolved_state: {
+    local_context?: string;
+    memory_contents?: Record<string, string>;
+    skills_source_paths?: string[];
+    skills_loaded?: Array<Record<string, unknown>>;
+    summarization_event?: Record<string, unknown> | null;
+  };
+}
+
 export interface ClawMessageMetadata extends Record<string, unknown> {
   stream_protocol?: string;
   tool_call_count?: number;
   process_event_count?: number;
   timeline?: TimelineSnapshotEntry[];
+  prompt_debug?: PromptDebugSnapshot;
   selected_skill?: string | null;
   selected_skill_alias?: string | null;
 }
@@ -42,6 +112,15 @@ export interface ToolCall {
   input: unknown;
   output?: unknown;
   duration?: number;
+  error?: string;
+}
+
+export interface SubagentChildTool {
+  id: string;
+  tool_name: string;
+  status: ToolStatus;
+  tool_input?: unknown;
+  tool_output?: unknown;
   error?: string;
 }
 
@@ -113,6 +192,7 @@ export interface SubAgentTimelineItem {
   toolId?: string;
   transcript?: string;
   result?: string;
+  childTools?: ToolCall[];
 }
 
 export type TimelineItem =
@@ -135,7 +215,7 @@ export interface ConversationUpdate {
 }
 
 export interface MessageCreate {
-  content: string;
+  content: string | ContentBlock[];
   selected_skill?: string | null;
 }
 
@@ -169,6 +249,20 @@ export interface ClawSkillsStats {
   total: number;
   enabled: number;
   disabled: number;
+}
+
+export interface MCPServerConfig {
+  type?: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export interface MCPConfig {
+  mcpServers: Record<string, MCPServerConfig>;
 }
 
 export interface TextChunkEvent {
@@ -262,6 +356,7 @@ export interface SubagentUpdatedEvent {
   delta?: string;
   transcript?: string;
   state?: Record<string, unknown>;
+  child_tools?: SubagentChildTool[];
 }
 
 export interface SubagentCompletedEvent {
@@ -270,6 +365,7 @@ export interface SubagentCompletedEvent {
   tool_id: string;
   status: Exclude<ProcessStatus, "pending" | "running">;
   result?: string;
+  child_tools?: SubagentChildTool[];
 }
 
 export interface DoneEvent {
@@ -279,6 +375,12 @@ export interface DoneEvent {
 export interface ErrorEvent {
   type: "error";
   message: string;
+}
+
+export interface PromptDebugEvent {
+  type: "prompt_debug";
+  user_message_id: string;
+  prompt_debug: PromptDebugSnapshot;
 }
 
 export type SSEEvent =
@@ -294,5 +396,6 @@ export type SSEEvent =
   | SubagentStartedEvent
   | SubagentUpdatedEvent
   | SubagentCompletedEvent
+  | PromptDebugEvent
   | DoneEvent
   | ErrorEvent;

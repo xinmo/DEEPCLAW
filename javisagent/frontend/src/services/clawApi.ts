@@ -7,6 +7,7 @@ import type {
   ClawMessageMetadata,
   ConversationCreate,
   ConversationUpdate,
+  MCPConfig,
   MessageCreate,
   ModelInfo,
   ProcessEvent,
@@ -115,6 +116,28 @@ function parseSseChunk(chunk: string, onEvent: (event: SSEEvent) => void) {
   }
 
   return incomplete;
+}
+
+export function isAbortLikeError(error: unknown) {
+  if (!error) {
+    return false;
+  }
+
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+
+  const normalizedMessage =
+    error instanceof Error
+      ? `${error.name} ${error.message}`.toLowerCase()
+      : String(error).toLowerCase();
+
+  return (
+    normalizedMessage.includes("aborterror") ||
+    normalizedMessage.includes("was aborted") ||
+    normalizedMessage.includes("signal is aborted") ||
+    normalizedMessage.includes("stream was cancelled")
+  );
 }
 
 export const clawApi = {
@@ -263,6 +286,23 @@ export const clawApi = {
     return expectJson<{ success: boolean; skill: ClawSkillSummary }>(
       response,
       "Failed to update skill status",
+    );
+  },
+
+  async getMcpConfig(): Promise<MCPConfig> {
+    const response = await fetch(`${API_BASE}/mcp`);
+    return expectJson<MCPConfig>(response, "获取 MCP 配置失败");
+  },
+
+  async saveMcpConfig(config: MCPConfig): Promise<{ success: boolean; mcpServers: MCPConfig["mcpServers"] }> {
+    const response = await fetch(`${API_BASE}/mcp`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    return expectJson<{ success: boolean; mcpServers: MCPConfig["mcpServers"] }>(
+      response,
+      "保存 MCP 配置失败",
     );
   },
 };
