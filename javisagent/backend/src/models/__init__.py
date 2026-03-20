@@ -1,4 +1,4 @@
-from .base import Base, engine, get_db
+from .base import Base, SessionLocal, engine, get_db
 from .channels import ChannelConfig, ChannelSession
 from .claw import (
     ClawConversation,
@@ -14,6 +14,7 @@ from .task import Task, TaskStatus
 
 __all__ = [
     "Base",
+    "SessionLocal",
     "engine",
     "get_db",
     "Task",
