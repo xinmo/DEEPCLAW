@@ -51,9 +51,15 @@ export interface MarketShare {
   share: number;
 }
 
+export interface PricePoint {
+  date: string;
+  value: number;
+}
+
 export interface Material {
   name: string;
   analysis?: string;
+  priceHistory?: PricePoint[];
 }
 
 export interface BarrierItem {
@@ -63,6 +69,7 @@ export interface BarrierItem {
 
 export interface RiskItem {
   level: "high" | "medium" | "low";
+  title: string;
   description: string;
 }
 
@@ -72,4 +79,5 @@ export interface DeepResearchData {
   materials: Material[];
   barriers: BarrierItem[];
   risks: RiskItem[];
+  materialAnalysis?: string;
 }

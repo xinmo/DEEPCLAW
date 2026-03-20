@@ -3,7 +3,7 @@ import { Button, Progress, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
-import type { DeepResearchData, CompanyFinancial, RiskItem } from "../../types/industryResearch";
+import type { DeepResearchData, CompanyFinancial, RiskItem, BarrierItem } from "../../types/industryResearch";
 
 const { Text, Title } = Typography;
 
@@ -83,10 +83,11 @@ const DeepResearch: React.FC<DeepResearchProps> = ({
       sorter: (a, b) => a.pe - b.pe,
     },
     {
-      title: "国产化贡献",
+      title: "国产化率贡献",
       dataIndex: "domesticContribution",
       key: "domestic",
-      render: (v: number) => "★".repeat(Math.min(Math.round(v), 5)),
+      sorter: (a, b) => a.domesticContribution - b.domesticContribution,
+      render: (v: number) => `${v}%`,
     },
   ];
 
@@ -140,19 +141,59 @@ const DeepResearch: React.FC<DeepResearchProps> = ({
           {(deepData?.materials ?? []).length === 0 ? (
             <Text type="secondary">暂无原材料数据</Text>
           ) : (
-            (deepData?.materials ?? []).map((m, i) => (
-              <div key={i} style={{ marginBottom: 16 }}>
-                <Text strong>{m.name}</Text>
-                {m.analysis && (
-                  <Text
-                    type="secondary"
-                    style={{ display: "block", marginTop: 4, fontSize: 12 }}
-                  >
-                    AI分析：{m.analysis}
-                  </Text>
-                )}
-              </div>
-            ))
+            (deepData?.materials ?? []).map((m, i) => {
+              const pts = m.priceHistory ?? [];
+              const hasChart = pts.length >= 2;
+              const maxVal = hasChart ? Math.max(...pts.map((p) => p.value)) : 1;
+              const minVal = hasChart ? Math.min(...pts.map((p) => p.value)) : 0;
+              const range = maxVal - minVal || 1;
+              const W = 320;
+              const H = 100;
+              const stepX = W / (pts.length - 1);
+              const toY = (v: number) => H - ((v - minVal) / range) * (H - 16);
+              return (
+                <div key={i} style={{ marginBottom: 20 }}>
+                  <Text strong>{m.name}</Text>
+                  {hasChart && (
+                    <svg
+                      width="100%"
+                      viewBox={`0 0 ${W} ${H + 20}`}
+                      style={{ display: "block", marginTop: 8 }}
+                    >
+                      <polyline
+                        points={pts.map((p, j) => `${j * stepX},${toY(p.value)}`).join(" ")}
+                        fill="none"
+                        stroke="#1677ff"
+                        strokeWidth={2}
+                      />
+                      {pts.map((p, j) => (
+                        <circle key={j} cx={j * stepX} cy={toY(p.value)} r={3} fill="#1677ff" />
+                      ))}
+                      {pts.map((p, j) => (
+                        <text
+                          key={`t${j}`}
+                          x={j * stepX}
+                          y={H + 16}
+                          textAnchor="middle"
+                          fontSize={9}
+                          fill="#888"
+                        >
+                          {p.date}
+                        </text>
+                      ))}
+                    </svg>
+                  )}
+                  {(m.analysis || deepData?.materialAnalysis) && (
+                    <Text
+                      type="secondary"
+                      style={{ display: "block", marginTop: 4, fontSize: 12 }}
+                    >
+                      AI分析：{m.analysis ?? deepData?.materialAnalysis}
+                    </Text>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       ),
@@ -197,13 +238,20 @@ const DeepResearch: React.FC<DeepResearchProps> = ({
               style={{
                 marginBottom: 8,
                 padding: "8px 12px",
-                background: "#fafafa",
+                background: `${RISK_COLORS[r.level]}10`,
                 borderRadius: 6,
                 borderLeft: `3px solid ${RISK_COLORS[r.level]}`,
               }}
             >
-              <Text>
-                {RISK_ICONS[r.level]} {r.description}
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                <span>{RISK_ICONS[r.level]}</span>
+                <Text strong>{r.title}</Text>
+                <Tag color={r.level === "high" ? "red" : r.level === "medium" ? "orange" : "green"}>
+                  {r.level === "high" ? "高风险" : r.level === "medium" ? "中风险" : "低风险"}
+                </Tag>
+              </div>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {r.description}
               </Text>
             </div>
           ))}
@@ -213,7 +261,7 @@ const DeepResearch: React.FC<DeepResearchProps> = ({
   ];
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div style={{ height: "calc(100vh - 64px)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Toolbar */}
       <div
         style={{
