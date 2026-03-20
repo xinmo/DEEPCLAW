@@ -29,12 +29,12 @@ class ConversationResponse(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    content: str | list = Field(...)
+    content: str | list[dict[str, Any]] = Field(...)
     selected_skill: str | None = None
 
     @field_validator("content")
     @classmethod
-    def content_not_empty(cls, v: str | list) -> str | list:
+    def content_not_empty(cls, v: str | list[dict[str, Any]]) -> str | list[dict[str, Any]]:
         if isinstance(v, str) and not v.strip():
             raise ValueError("content must not be empty")
         if isinstance(v, list) and len(v) == 0:
