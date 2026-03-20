@@ -141,8 +141,30 @@ nationalization_rate 是 0-1 之间的小数
         "agentId": "checker", "name": "数据核查员", "status": "running",
         "action": "验证企业归属与市场份额",
     })
-    yield make_sse("log", {"timestamp": datetime.now().strftime("%H:%M:%S"), "message": "正在核查企业数据准确性..."})
-    yield make_sse("log", {"timestamp": datetime.now().strftime("%H:%M:%S"), "message": "数据核查：交叉验证企业市场份额数据..."})
+    yield make_sse("log", {"timestamp": datetime.now().strftime("%H:%M:%S"), "message": "开始核查节点数据..."})
+
+    _valid_competition_types = {"domestic", "foreign", "balanced"}
+    corrected = 0
+    for node in graph_builder.nodes.values():
+        changed = False
+        # Validate nationalization_rate is in [0, 1]
+        if not (0.0 <= node.nationalization_rate <= 1.0):
+            node.nationalization_rate = max(0.0, min(1.0, node.nationalization_rate))
+            changed = True
+        # Validate competition_type
+        if node.competition_type not in _valid_competition_types:
+            node.competition_type = "balanced"
+            changed = True
+        # Validate companies list is actually a list
+        if not isinstance(node.companies, list):
+            node.companies = []
+            changed = True
+        if changed:
+            corrected += 1
+            yield make_sse("graph_node", node.to_sse_dict())
+            yield make_sse("log", {"timestamp": datetime.now().strftime("%H:%M:%S"), "message": f"已修正节点数据：{node.label}"})
+
+    yield make_sse("log", {"timestamp": datetime.now().strftime("%H:%M:%S"), "message": f"核查完成，共修正 {corrected} 个节点"})
     yield make_sse("agent_status", {"agentId": "checker", "name": "数据核查员", "status": "done"})
     yield make_sse("progress", {"percent": 85, "stage": "数据核查完成"})
 
