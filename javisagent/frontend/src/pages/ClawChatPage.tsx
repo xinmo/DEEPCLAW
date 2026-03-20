@@ -1165,7 +1165,7 @@ const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
                 type="primary"
                 icon={<SendOutlined />}
                 onClick={() => void handleSendMessage()}
-                disabled={!currentConvId || !inputValue.trim()}
+                disabled={!currentConvId || (!inputValue.trim() && attachedImages.length === 0)}
               >
                 发送
               </Button>
