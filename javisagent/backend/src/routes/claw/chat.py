@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import uuid
 from collections.abc import AsyncGenerator
@@ -25,6 +26,7 @@ from src.models.claw import (
 )
 from src.schemas.claw import MessageCreate, MessageResponse
 from src.services.claw import create_claw_agent
+from src.services.claw.prompt_debug import build_prompt_debug_snapshot
 from src.services.claw.prompt_registry import (
     SYSTEM_PROMPT_ID,
     build_deep_agent_prompt_overrides,
@@ -46,6 +48,9 @@ SHELL_TOOL_NAMES = {"shell", "bash", "execute"}
 PLANNING_TOOL_NAMES = {"write_todos"}
 SUBAGENT_TOOL_NAMES = {"task"}
 REPEAT_QUERY_CACHE_WINDOW = timedelta(minutes=10)
+TERMINAL_PROCESS_STATUSES = {"success", "completed", "failed"}
+_UNSET = object()
+SUBAGENT_DEBUG_ENV = "CLAW_SUBAGENT_DEBUG"
 
 
 def _normalize_tool_name(value: Any) -> str:
@@ -54,6 +59,28 @@ def _normalize_tool_name(value: Any) -> str:
 
 def _sanitize_tool_call_id(value: Any) -> str:
     return str(value).replace(".", "_").replace("/", "_").replace("\\", "_") if value else ""
+
+
+def _extract_text_content(content: str | list) -> str:
+    """从多模态 content 中提取纯文本，用于存入数据库。"""
+    if isinstance(content, str):
+        return content
+    parts = [
+        block["text"]
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    return " ".join(parts) or "[图片]"
+
+
+def _count_images(content: str | list) -> int:
+    """统计 content 中的图片数量。"""
+    if isinstance(content, str):
+        return 0
+    return sum(
+        1 for block in content
+        if isinstance(block, dict) and block.get("type") == "image_url"
+    )
 
 
 def _ensure_conversation_prompt_snapshot(
@@ -309,6 +336,16 @@ def _find_todos(payload: Any) -> list[dict[str, Any]] | None:
         return None
 
     if isinstance(payload, list):
+        if payload and all(
+            isinstance(item, dict)
+            and isinstance(item.get("status"), str)
+            and any(
+                isinstance(item.get(key), str) and item.get(key)
+                for key in ("content", "title", "task", "id")
+            )
+            for item in payload
+        ):
+            return _jsonable(payload)
         for item in payload:
             found = _find_todos(item)
             if found is not None:
@@ -338,6 +375,60 @@ def _derive_planning_status(todos: list[dict[str, Any]]) -> str:
     if statuses and statuses <= {"completed"}:
         return "completed"
     return "pending"
+
+
+def _is_terminal_process_status(value: Any) -> bool:
+    return str(value) in TERMINAL_PROCESS_STATUSES
+
+
+def _preserve_terminal_status(current_status: Any, next_status: str) -> str:
+    if _is_terminal_process_status(current_status) and not _is_terminal_process_status(next_status):
+        return str(current_status)
+    return next_status
+
+
+def _todo_merge_key(todo: Any) -> str:
+    if not isinstance(todo, dict):
+        return ""
+
+    for key in ("id", "content", "title", "task"):
+        value = todo.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{key}:{value.strip()}"
+
+    return ""
+
+
+def _merge_todos(existing: Any, incoming: Any) -> list[dict[str, Any]]:
+    normalized_existing = [
+        dict(item) for item in _jsonable(existing or []) if isinstance(item, dict)
+    ]
+    normalized_incoming = [
+        dict(item) for item in _jsonable(incoming or []) if isinstance(item, dict)
+    ]
+
+    if not normalized_existing:
+        return normalized_incoming
+    if not normalized_incoming:
+        return normalized_existing
+
+    merged = [dict(item) for item in normalized_existing]
+    key_to_index = {
+        key: index
+        for index, item in enumerate(merged)
+        if (key := _todo_merge_key(item))
+    }
+
+    for item in normalized_incoming:
+        key = _todo_merge_key(item)
+        if key and key in key_to_index:
+            merged[key_to_index[key]] = {**merged[key_to_index[key]], **item}
+            continue
+        merged.append(dict(item))
+        if key:
+            key_to_index[key] = len(merged) - 1
+
+    return merged
 
 
 def _derive_shell_command(tool_input: Any) -> str:
@@ -564,6 +655,100 @@ def _merge_tool_call_args(existing_args: Any, new_args: Any) -> Any:
     return new_args
 
 
+def _normalize_child_tool_records(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    records: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        records.append(dict(_jsonable(item)))
+    return records
+
+
+def _find_child_tool_index(
+    child_tools: list[dict[str, Any]],
+    *,
+    tool_id: str | None = None,
+    tool_name: str | None = None,
+) -> int | None:
+    normalized_tool_name = _normalize_tool_name(tool_name)
+    sanitized_tool_id = _sanitize_tool_call_id(tool_id) if tool_id else ""
+
+    for index, child_tool in enumerate(child_tools):
+        existing_id = child_tool.get("id")
+        if isinstance(existing_id, str) and tool_id and existing_id == tool_id:
+            return index
+        if (
+            isinstance(existing_id, str)
+            and sanitized_tool_id
+            and _sanitize_tool_call_id(existing_id) == sanitized_tool_id
+        ):
+            return index
+
+    if normalized_tool_name:
+        running_matches = [
+            index
+            for index, child_tool in enumerate(child_tools)
+            if (
+                str(child_tool.get("status")) == "running"
+                and _normalize_tool_name(child_tool.get("tool_name")) == normalized_tool_name
+            )
+        ]
+        if len(running_matches) == 1:
+            return running_matches[0]
+
+    return None
+
+
+def _upsert_child_tool_record(
+    child_tools: list[dict[str, Any]],
+    *,
+    tool_id: str,
+    tool_name: str,
+    status: str,
+    tool_input: Any = _UNSET,
+    tool_output: Any = _UNSET,
+    error: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    next_child_tools = [dict(item) for item in _normalize_child_tool_records(child_tools)]
+    index = _find_child_tool_index(next_child_tools, tool_id=tool_id, tool_name=tool_name)
+    existing = next_child_tools[index] if index is not None else {}
+
+    record = {
+        **existing,
+        "id": tool_id or existing.get("id") or f"tool_{uuid.uuid4().hex}",
+        "tool_name": tool_name or existing.get("tool_name") or "tool",
+        "status": status or existing.get("status") or "running",
+    }
+
+    if tool_input is not _UNSET:
+        record["tool_input"] = _jsonable(tool_input)
+    elif "tool_input" in existing:
+        record["tool_input"] = existing["tool_input"]
+
+    if tool_output is not _UNSET:
+        record["tool_output"] = _jsonable(tool_output)
+    elif "tool_output" in existing:
+        record["tool_output"] = existing["tool_output"]
+
+    if error is not _UNSET:
+        if error in (None, ""):
+            record.pop("error", None)
+        else:
+            record["error"] = _stringify(error)
+    elif "error" in existing:
+        record["error"] = existing["error"]
+
+    if index is None:
+        next_child_tools.append(record)
+    else:
+        next_child_tools[index] = record
+
+    return next_child_tools
+
+
 def _normalize_tool_call_args(raw_args: Any, tool_name: str = "") -> dict[str, Any] | None:
     if raw_args is None:
         logger.debug(f"_normalize_tool_call_args: raw_args is None for tool {tool_name}")
@@ -681,6 +866,66 @@ def _flatten_namespace_parts(namespace: tuple[Any, ...]) -> list[str]:
 
     visit(namespace)
     return [part for part in parts if part]
+
+
+def _normalize_subagent_namespace(namespace: tuple[Any, ...]) -> tuple[str, ...]:
+    return tuple(
+        part
+        for part in _flatten_namespace_parts(namespace)
+        if not (part == "tools" or part.startswith("tools:"))
+    )
+
+
+def _collect_embedded_stream_messages(payload: Any) -> list[AIMessage | ToolMessage]:
+    messages: list[AIMessage | ToolMessage] = []
+    seen_ids: set[int] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, (AIMessage, ToolMessage)):
+            object_id = id(value)
+            if object_id in seen_ids:
+                return
+            seen_ids.add(object_id)
+            messages.append(value)
+            return
+
+        if isinstance(value, dict):
+            embedded_messages = value.get("messages")
+            if isinstance(embedded_messages, list):
+                for embedded_message in embedded_messages:
+                    visit(embedded_message)
+            for child in value.values():
+                if child is embedded_messages:
+                    continue
+                visit(child)
+            return
+
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(payload)
+    return messages
+
+
+def _subagent_debug_enabled() -> bool:
+    return os.getenv(SUBAGENT_DEBUG_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _subagent_debug_summary(value: Any) -> Any:
+    if isinstance(value, dict):
+        summary: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(item, dict):
+                summary[key] = list(item.keys())
+            elif isinstance(item, list):
+                summary[key] = f"list[{len(item)}]"
+            else:
+                summary[key] = type(item).__name__
+        return summary
+    if isinstance(value, list):
+        return f"list[{len(value)}]"
+    return type(value).__name__
 
 
 def _serialize_tool_call(tool_call: ClawToolCall) -> dict[str, Any]:
@@ -862,14 +1107,16 @@ async def chat_event_generator(
     db: Session,
     selected_skill_name: str | None = None,
 ) -> AsyncGenerator[str, None]:
+    user_record: ClawMessage | None = None
     assistant_message: ClawMessage | None = None
     assistant_fragments: list[str] = []
     timeline_entries: list[dict[str, Any]] = []
     tool_call_buffers: dict[str | int, dict[str, Any]] = {}
+    subagent_tool_call_buffers: dict[str, dict[str, Any]] = {}
     tool_records: dict[str, ClawToolCall] = {}
     process_events: dict[str, ClawProcessEvent] = {}
     pending_subagent_tool_ids: list[str] = []
-    namespace_to_subagent_id: dict[tuple[Any, ...], str] = {}
+    namespace_to_subagent_id: dict[tuple[str, ...], str] = {}
     planning_item_id: str | None = None
     process_sequence = 0
     next_text_timeline_index = 1
@@ -880,9 +1127,34 @@ async def chat_event_generator(
         else None
     )
     selected_skill_metadata = _build_selected_skill_metadata(selected_skill)
+    selected_skill_turn_instruction = (
+        _build_selected_skill_turn_instruction(selected_skill)
+        if selected_skill is not None
+        else None
+    )
+    should_capture_prompt_debug = (
+        db.query(ClawMessage.id)
+        .filter_by(conversation_id=str(conv_id))
+        .first()
+        is None
+    )
+    prompt_debug_snapshot: dict[str, Any] | None = None
+    prompt_debug_persisted = False
+    prompt_debug_emitted = False
 
     def touch_conversation() -> None:
         conversation.updated_at = datetime.utcnow()
+
+    def persist_prompt_debug_snapshot() -> None:
+        nonlocal prompt_debug_persisted
+        if prompt_debug_persisted or prompt_debug_snapshot is None or user_record is None:
+            return
+
+        metadata = dict(user_record.extra_data or {})
+        metadata["prompt_debug"] = prompt_debug_snapshot
+        user_record.extra_data = metadata
+        db.commit()
+        prompt_debug_persisted = True
 
     def persist_stream_snapshot(stream_in_progress: bool = True) -> None:
         if assistant_message is None:
@@ -933,11 +1205,17 @@ async def chat_event_generator(
         current_text_timeline_id = None
 
         for entry in timeline_entries:
-            if (
-                entry.get("kind") == kind
-                and entry.get("item_id") == item_id
-                and entry.get("tool_id") == tool_id
-            ):
+            if entry.get("kind") != kind:
+                continue
+
+            if item_id is not None and entry.get("item_id") == item_id:
+                if tool_id is not None and not entry.get("tool_id"):
+                    entry["tool_id"] = tool_id
+                return
+
+            if tool_id is not None and entry.get("tool_id") == tool_id:
+                if item_id is not None and not entry.get("item_id"):
+                    entry["item_id"] = item_id
                 return
 
         entry: dict[str, Any] = {"kind": kind}
@@ -1008,7 +1286,8 @@ async def chat_event_generator(
 
     def ensure_subagent_binding(namespace: tuple[Any, ...]) -> tuple[ClawProcessEvent, bool]:
         created = False
-        item_id = namespace_to_subagent_id.get(namespace)
+        normalized_namespace = _normalize_subagent_namespace(namespace)
+        item_id = resolve_subagent_item_id_for_namespace(namespace, allow_pending=True)
 
         if item_id is None:
             if pending_subagent_tool_ids:
@@ -1017,27 +1296,26 @@ async def chat_event_generator(
             else:
                 item_id = f"subagent:{uuid.uuid4().hex}"
                 created = True
-            namespace_to_subagent_id[namespace] = item_id
+            namespace_to_subagent_id[normalized_namespace] = item_id
 
         process_event = process_events.get(item_id)
         if process_event is None:
-            namespace_parts = [
-                part
-                for part in _flatten_namespace_parts(namespace)
-                if not (part == "tools" or part.startswith("tools:"))
-            ]
-            title = " / ".join(namespace_parts) or "Subagent"
+            title = " / ".join(normalized_namespace) or "Subagent"
             process_event = upsert_process_event(
                 item_id,
                 kind="subagent",
                 title=title,
                 status="running",
-                data={"namespace": [str(part) for part in namespace], "transcript": ""},
+                data={
+                    "namespace": list(normalized_namespace),
+                    "transcript": "",
+                    "child_tools": [],
+                },
             )
             created = True
         else:
             data = dict(process_event.data or {})
-            data["namespace"] = [str(part) for part in namespace]
+            data["namespace"] = list(normalized_namespace)
             process_event = upsert_process_event(
                 item_id,
                 kind="subagent",
@@ -1095,14 +1373,294 @@ async def chat_event_generator(
         return f"tool_{uuid.uuid4().hex}"
 
     def should_track_subagent_namespace(namespace: tuple[Any, ...]) -> bool:
-        namespace_parts = _flatten_namespace_parts(namespace)
-        if any(part == "tools" or part.startswith("tools:") for part in namespace_parts):
-            return False
-        if namespace in namespace_to_subagent_id:
-            return True
-        if not pending_subagent_tool_ids:
-            return False
-        return True
+        return resolve_subagent_item_id_for_namespace(namespace, allow_pending=True) is not None
+
+    def resolve_subagent_child_tool_id(
+        process_event: ClawProcessEvent,
+        tool_message: ToolMessage,
+    ) -> str:
+        raw_tool_id = getattr(tool_message, "tool_call_id", None)
+        tool_name = getattr(tool_message, "name", None)
+        child_tools = _normalize_child_tool_records((process_event.data or {}).get("child_tools"))
+
+        if raw_tool_id:
+            tool_id = str(raw_tool_id)
+            index = _find_child_tool_index(child_tools, tool_id=tool_id, tool_name=tool_name)
+            if index is not None:
+                existing_id = child_tools[index].get("id")
+                if isinstance(existing_id, str) and existing_id:
+                    return existing_id
+            return tool_id
+
+        index = _find_child_tool_index(child_tools, tool_name=tool_name)
+        if index is not None:
+            existing_id = child_tools[index].get("id")
+            if isinstance(existing_id, str) and existing_id:
+                return existing_id
+
+        return f"tool_{uuid.uuid4().hex}"
+
+    def get_active_subagent_item_ids() -> list[str]:
+        return [
+            item_id
+            for item_id, process_event in process_events.items()
+            if process_event.kind == "subagent"
+            and not _is_terminal_process_status(process_event.status)
+        ]
+
+    def resolve_subagent_item_id_for_namespace(
+        namespace: tuple[Any, ...],
+        *,
+        allow_pending: bool,
+    ) -> str | None:
+        normalized_namespace = _normalize_subagent_namespace(namespace)
+        if normalized_namespace in namespace_to_subagent_id:
+            return namespace_to_subagent_id[normalized_namespace]
+
+        if normalized_namespace:
+            matched_ids = {
+                item_id
+                for existing_namespace, item_id in namespace_to_subagent_id.items()
+                if existing_namespace
+                and (
+                    existing_namespace[: len(normalized_namespace)] == normalized_namespace
+                    or normalized_namespace[: len(existing_namespace)] == existing_namespace
+                )
+            }
+            if len(matched_ids) == 1:
+                return next(iter(matched_ids))
+
+        active_item_ids = get_active_subagent_item_ids()
+        if len(active_item_ids) == 1:
+            return active_item_ids[0]
+
+        if allow_pending and len(pending_subagent_tool_ids) == 1:
+            return f"subagent:{pending_subagent_tool_ids[0]}"
+
+        return None
+
+    def log_subagent_debug(
+        *,
+        namespace: tuple[Any, ...],
+        stream_mode: str,
+        stage: str,
+        data: Any,
+        resolved_item_id: str | None = None,
+    ) -> None:
+        if not _subagent_debug_enabled():
+            return
+
+        logger.warning(
+            "Subagent debug [%s]: namespace=%s normalized=%s stream_mode=%s resolved_item_id=%s data_summary=%s",
+            stage,
+            _flatten_namespace_parts(namespace),
+            _normalize_subagent_namespace(namespace),
+            stream_mode,
+            resolved_item_id,
+            _subagent_debug_summary(data),
+        )
+
+    def build_subagent_message_events(
+        process_event: ClawProcessEvent,
+        *,
+        created: bool,
+        message: AIMessage | ToolMessage,
+    ) -> tuple[ClawProcessEvent, bool, list[str]]:
+        events: list[str] = []
+        start_emitted = False
+
+        def maybe_append_started(event_data: dict[str, Any]) -> None:
+            nonlocal created, start_emitted
+            if not created or start_emitted:
+                return
+
+            events.append(
+                _sse_event(
+                    "subagent_started",
+                    item_id=process_event.id,
+                    title=process_event.title,
+                    tool_id=event_data.get("tool_id"),
+                    status=process_event.status,
+                )
+            )
+            start_emitted = True
+            created = False
+
+        if isinstance(message, AIMessage):
+            content_blocks = _iter_content_blocks(message)
+            tool_call_chunk_blocks = _tool_call_chunk_blocks_from_message(
+                message,
+                content_blocks,
+            )
+            tool_call_blocks = _tool_call_blocks_from_message(
+                message,
+                [*content_blocks, *tool_call_chunk_blocks],
+            )
+            additional_tool_call_blocks = _tool_call_blocks_from_additional_kwargs(
+                message,
+                [*content_blocks, *tool_call_chunk_blocks, *tool_call_blocks],
+            )
+
+            for block in content_blocks:
+                if block.get("type") != "text":
+                    continue
+                text = block.get("text", "")
+                if not text:
+                    continue
+
+                event_data = dict(process_event.data or {})
+                transcript = f"{event_data.get('transcript', '')}{text}"
+                event_data["transcript"] = transcript
+                process_event = upsert_process_event(
+                    process_event.id,
+                    kind="subagent",
+                    title=process_event.title,
+                    status=_preserve_terminal_status(process_event.status, "running"),
+                    data=event_data,
+                )
+                persist_stream_snapshot()
+                maybe_append_started(event_data)
+                events.append(
+                    _sse_event(
+                        "subagent_updated",
+                        item_id=process_event.id,
+                        tool_id=event_data.get("tool_id"),
+                        status=process_event.status,
+                        delta=text,
+                        transcript=transcript,
+                        child_tools=event_data.get("child_tools"),
+                    )
+                )
+
+            for block in [
+                *content_blocks,
+                *tool_call_chunk_blocks,
+                *tool_call_blocks,
+                *additional_tool_call_blocks,
+            ]:
+                if block.get("type") not in {"tool_call", "tool_call_chunk"}:
+                    continue
+
+                tool_id = str(
+                    block.get("id")
+                    if block.get("id") is not None
+                    else f"buffer:{len(subagent_tool_call_buffers)}"
+                )
+                buffer_key = f"{process_event.id}:{tool_id}"
+                buffer = subagent_tool_call_buffers.setdefault(
+                    buffer_key,
+                    {
+                        "id": tool_id,
+                        "name": block.get("name"),
+                        "args": None,
+                        "started": False,
+                    },
+                )
+
+                raw_args = block.get("args")
+                if block.get("name"):
+                    buffer["name"] = block.get("name")
+
+                if isinstance(raw_args, str):
+                    buffer["args"] = _merge_tool_call_arg_text(buffer.get("args", ""), raw_args)
+                elif raw_args is not None:
+                    buffer["args"] = _merge_tool_call_args(buffer.get("args"), raw_args)
+
+                tool_name = str(buffer.get("name") or "").strip()
+                parsed_args = _normalize_partial_tool_call_args(buffer.get("args"), tool_name)
+                if parsed_args is None and isinstance(raw_args, dict):
+                    parsed_args = raw_args
+                if not tool_name or parsed_args is None:
+                    continue
+
+                buffer["args"] = parsed_args
+                buffer["started"] = True
+
+                event_data = dict(process_event.data or {})
+                event_data["child_tools"] = _upsert_child_tool_record(
+                    event_data.get("child_tools", []),
+                    tool_id=tool_id,
+                    tool_name=tool_name,
+                    status="running",
+                    tool_input=parsed_args,
+                )
+                process_event = upsert_process_event(
+                    process_event.id,
+                    kind="subagent",
+                    title=process_event.title,
+                    status=_preserve_terminal_status(process_event.status, "running"),
+                    data=event_data,
+                )
+                persist_stream_snapshot()
+                maybe_append_started(event_data)
+                events.append(
+                    _sse_event(
+                        "subagent_updated",
+                        item_id=process_event.id,
+                        tool_id=event_data.get("tool_id"),
+                        status=process_event.status,
+                        child_tools=event_data.get("child_tools"),
+                    )
+                )
+
+            return process_event, created, events
+
+        current_data = dict(process_event.data or {})
+        existing_child_tools = _normalize_child_tool_records(current_data.get("child_tools"))
+        child_tool_id = resolve_subagent_child_tool_id(process_event, message)
+        child_index = _find_child_tool_index(
+            existing_child_tools,
+            tool_id=child_tool_id,
+            tool_name=getattr(message, "name", None),
+        )
+        existing_child_tool = existing_child_tools[child_index] if child_index is not None else {}
+        tool_name = str(
+            getattr(message, "name", None)
+            or existing_child_tool.get("tool_name")
+            or "tool"
+        )
+        tool_input = _merge_tool_input_from_message(
+            tool_name,
+            existing_child_tool.get("tool_input"),
+            message,
+        )
+        tool_output = _extract_tool_output(message)
+        tool_status = "success" if getattr(message, "status", "success") == "success" else "failed"
+        normalized_tool_name = _normalize_tool_name(tool_name)
+        if normalized_tool_name in SHELL_TOOL_NAMES:
+            shell_payload = _extract_shell_payload(message, tool_input)
+            exit_code = shell_payload.get("exit_code")
+            if isinstance(exit_code, int) and exit_code != 0:
+                tool_status = "failed"
+
+        current_data["child_tools"] = _upsert_child_tool_record(
+            existing_child_tools,
+            tool_id=child_tool_id,
+            tool_name=tool_name,
+            status=tool_status,
+            tool_input=tool_input,
+            tool_output=tool_output,
+            error=None if tool_status == "success" else tool_output,
+        )
+        process_event = upsert_process_event(
+            process_event.id,
+            kind="subagent",
+            title=process_event.title,
+            status=process_event.status,
+            data=current_data,
+        )
+        persist_stream_snapshot()
+        maybe_append_started(current_data)
+        events.append(
+            _sse_event(
+                "subagent_updated",
+                item_id=process_event.id,
+                tool_id=current_data.get("tool_id"),
+                status=process_event.status,
+                child_tools=current_data.get("child_tools"),
+            )
+        )
+        return process_event, created, events
 
     try:
         cached_reply = _find_recent_duplicate_reply(
@@ -1113,11 +1671,15 @@ async def chat_event_generator(
             db,
         )
         if cached_reply is not None:
+            _img_count_cached = _count_images(user_message)
             user_record = ClawMessage(
                 conversation_id=str(conv_id),
                 role=MessageRole.USER,
-                content=user_message,
-                extra_data=selected_skill_metadata,
+                content=_extract_text_content(user_message),
+                extra_data={
+                    **selected_skill_metadata,
+                    **({"has_images": True, "image_count": _img_count_cached} if _img_count_cached > 0 else {}),
+                },
             )
             assistant_message = ClawMessage(
                 conversation_id=str(conv_id),
@@ -1143,11 +1705,15 @@ async def chat_event_generator(
             yield _sse_event("done")
             return
 
+        _img_count = _count_images(user_message)
         user_record = ClawMessage(
             conversation_id=str(conv_id),
             role=MessageRole.USER,
-            content=user_message,
-            extra_data=selected_skill_metadata,
+            content=_extract_text_content(user_message),
+            extra_data={
+                **selected_skill_metadata,
+                **({"has_images": True, "image_count": _img_count} if _img_count > 0 else {}),
+            },
         )
         assistant_message = ClawMessage(
             conversation_id=str(conv_id),
@@ -1163,7 +1729,19 @@ async def chat_event_generator(
 
         prompt_bundle = _ensure_conversation_prompt_snapshot(conversation, db)
 
-        agent = create_claw_agent(
+        def capture_prompt_debug_request(captured_request: dict[str, Any]) -> None:
+            nonlocal prompt_debug_snapshot
+            prompt_debug_snapshot = build_prompt_debug_snapshot(
+                conversation_id=str(conv_id),
+                llm_model=conversation.llm_model,
+                working_directory=conversation.working_directory,
+                prompt_bundle=prompt_bundle,
+                selected_skill=selected_skill,
+                turn_instruction=selected_skill_turn_instruction,
+                captured_request=captured_request,
+            )
+
+        agent = await create_claw_agent(
             working_directory=conversation.working_directory,
             llm_model=conversation.llm_model,
             conversation_id=str(conv_id),
@@ -1172,10 +1750,9 @@ async def chat_event_generator(
                 or conversation.system_prompt
             ),
             prompt_overrides=build_deep_agent_prompt_overrides(prompt_bundle),
-            turn_instruction=(
-                _build_selected_skill_turn_instruction(selected_skill)
-                if selected_skill is not None
-                else None
+            turn_instruction=selected_skill_turn_instruction,
+            debug_capture_callback=(
+                capture_prompt_debug_request if should_capture_prompt_debug else None
             ),
         )
 
@@ -1187,33 +1764,144 @@ async def chat_event_generator(
             subgraphs=True,
             config={"configurable": {"thread_id": str(conv_id)}},
         ):
+            if prompt_debug_snapshot is not None and not prompt_debug_persisted:
+                persist_prompt_debug_snapshot()
+            if (
+                prompt_debug_snapshot is not None
+                and user_record is not None
+                and not prompt_debug_emitted
+            ):
+                prompt_debug_emitted = True
+                yield _sse_event(
+                    "prompt_debug",
+                    user_message_id=user_record.id,
+                    prompt_debug=prompt_debug_snapshot,
+                )
+
             if not isinstance(chunk, tuple) or len(chunk) != 3:
                 continue
 
             namespace, stream_mode, data = chunk
             namespace_key = tuple(namespace) if namespace else ()
+            if namespace_key:
+                log_subagent_debug(
+                    namespace=namespace_key,
+                    stream_mode=stream_mode,
+                    stage="chunk",
+                    data=data,
+                    resolved_item_id=resolve_subagent_item_id_for_namespace(
+                        namespace_key,
+                        allow_pending=True,
+                    ),
+                )
 
             if stream_mode == "updates":
+                if namespace_key and should_track_subagent_namespace(namespace_key):
+                    process_event, created = ensure_subagent_binding(namespace_key)
+                    embedded_messages = _collect_embedded_stream_messages(data)
+                    if embedded_messages:
+                        log_subagent_debug(
+                            namespace=namespace_key,
+                            stream_mode=stream_mode,
+                            stage="embedded_messages",
+                            data={
+                                "count": len(embedded_messages),
+                                "message_types": [
+                                    type(embedded_message).__name__
+                                    for embedded_message in embedded_messages
+                                ],
+                            },
+                            resolved_item_id=process_event.id,
+                        )
+                        for embedded_message in embedded_messages:
+                            process_event, created, subagent_events = build_subagent_message_events(
+                                process_event,
+                                created=created,
+                                message=embedded_message,
+                            )
+                            for subagent_event in subagent_events:
+                                yield subagent_event
+                    current_data = dict(process_event.data or {})
+                    current_data["state"] = _jsonable(data)
+                    todos = _find_todos(data)
+                    if todos is not None:
+                        child_tool_status = (
+                            "success"
+                            if _derive_planning_status(todos) == "completed"
+                            else "running"
+                        )
+                        current_data["child_tools"] = _upsert_child_tool_record(
+                            current_data.get("child_tools", []),
+                            tool_id=f"{process_event.id}:write_todos",
+                            tool_name="write_todos",
+                            status=child_tool_status,
+                            tool_input={"todos": todos},
+                            tool_output=todos,
+                        )
+                        current_data["subagent_todos"] = _jsonable(todos)
+                    process_event = upsert_process_event(
+                        process_event.id,
+                        kind="subagent",
+                        title=process_event.title,
+                        status=process_event.status,
+                        data=current_data,
+                    )
+                    persist_stream_snapshot()
+                    if created:
+                        yield _sse_event(
+                            "subagent_started",
+                            item_id=process_event.id,
+                            title=process_event.title,
+                            tool_id=current_data.get("tool_id"),
+                            status=process_event.status,
+                        )
+                    yield _sse_event(
+                        "subagent_updated",
+                        item_id=process_event.id,
+                        tool_id=current_data.get("tool_id"),
+                        status=process_event.status,
+                        state=current_data.get("state"),
+                        child_tools=current_data.get("child_tools"),
+                    )
+                    continue
+
                 todos = _find_todos(data)
                 if todos is not None:
                     item_id = planning_item_id or f"planning:{uuid.uuid4().hex}"
-                    planning_status = _derive_planning_status(todos)
+                    current_event = process_events.get(item_id)
+                    current_data = dict(current_event.data or {}) if current_event else {}
+                    merged_todos = _merge_todos(current_data.get("todos"), todos)
+                    planning_status = _derive_planning_status(merged_todos)
+                    if (
+                        current_event is not None
+                        and _is_terminal_process_status(current_event.status)
+                        and not _is_terminal_process_status(planning_status)
+                    ):
+                        continue
                     process_event = upsert_process_event(
                         item_id,
                         kind="planning",
                         title="Planning",
                         status=planning_status,
-                        data={"todos": todos},
+                        data={
+                            **current_data,
+                            "todos": merged_todos,
+                        },
                     )
                     if planning_item_id is None:
                         planning_item_id = item_id
+                        append_timeline_item(
+                            "planning",
+                            item_id=process_event.id,
+                            tool_id=current_data.get("tool_id"),
+                        )
                         persist_stream_snapshot()
                         yield _sse_event(
                             "planning_started",
                             item_id=process_event.id,
                             title=process_event.title,
                             status=process_event.status,
-                            todos=todos,
+                            todos=merged_todos,
                         )
                     else:
                         persist_stream_snapshot()
@@ -1221,12 +1909,14 @@ async def chat_event_generator(
                         "planning_updated",
                         item_id=process_event.id,
                         status=process_event.status,
-                        todos=todos,
+                        todos=merged_todos,
                     )
                     continue
 
                 if namespace_key:
-                    bound_item_id = namespace_to_subagent_id.get(namespace_key)
+                    bound_item_id = namespace_to_subagent_id.get(
+                        _normalize_subagent_namespace(namespace_key)
+                    )
                     process_event = process_events.get(bound_item_id) if bound_item_id else None
                     if process_event is not None:
                         current_data = dict(process_event.data or {})
@@ -1257,43 +1947,32 @@ async def chat_event_generator(
             message, _metadata = data
 
             if namespace_key:
-                if isinstance(message, AIMessage) and should_track_subagent_namespace(namespace_key):
-                    process_event, created = ensure_subagent_binding(namespace_key)
-                    for block in _iter_content_blocks(message):
-                        if block.get("type") != "text":
-                            continue
-                        text = block.get("text", "")
-                        if not text:
-                            continue
+                if not should_track_subagent_namespace(namespace_key):
+                    log_subagent_debug(
+                        namespace=namespace_key,
+                        stream_mode=stream_mode,
+                        stage="skipped_untracked_namespace",
+                        data=data,
+                    )
+                    continue
 
-                        event_data = dict(process_event.data or {})
-                        transcript = f"{event_data.get('transcript', '')}{text}"
-                        event_data["transcript"] = transcript
-                        process_event = upsert_process_event(
-                            process_event.id,
-                            kind="subagent",
-                            title=process_event.title,
-                            status="running",
-                            data=event_data,
-                        )
-                        persist_stream_snapshot()
-                        if created:
-                            yield _sse_event(
-                                "subagent_started",
-                                item_id=process_event.id,
-                                title=process_event.title,
-                                tool_id=event_data.get("tool_id"),
-                                status=process_event.status,
-                            )
-                            created = False
-                        yield _sse_event(
-                            "subagent_updated",
-                            item_id=process_event.id,
-                            tool_id=event_data.get("tool_id"),
-                            status=process_event.status,
-                            delta=text,
-                            transcript=transcript,
-                        )
+                process_event, created = ensure_subagent_binding(namespace_key)
+                if not isinstance(message, (AIMessage, ToolMessage)):
+                    log_subagent_debug(
+                        namespace=namespace_key,
+                        stream_mode=stream_mode,
+                        stage="skipped_unsupported_message",
+                        data={"message_type": type(message).__name__},
+                        resolved_item_id=process_event.id,
+                    )
+                    continue
+                process_event, _created, subagent_events = build_subagent_message_events(
+                    process_event,
+                    created=created,
+                    message=message,
+                )
+                for subagent_event in subagent_events:
+                    yield subagent_event
                 continue
 
             if isinstance(message, AIMessage):
@@ -1490,7 +2169,7 @@ async def chat_event_generator(
                         append_timeline_item("shell", item_id=process_event.id, tool_id=tool_record.id)
                     elif normalized_tool_name in PLANNING_TOOL_NAMES:
                         todos = _jsonable(parsed_args.get("todos", []))
-                        planning_item_id = f"planning:{tool_record.id}"
+                        planning_item_id = planning_item_id or f"planning:{tool_record.id}"
                         process_event = upsert_process_event(
                             planning_item_id,
                             kind="planning",
@@ -1513,6 +2192,7 @@ async def chat_event_generator(
                                 "input": tool_record.tool_input,
                                 "transcript": "",
                                 "result": None,
+                                "child_tools": [],
                             },
                         )
                         append_timeline_item("subagent", item_id=process_event.id, tool_id=tool_record.id)
@@ -1666,14 +2346,19 @@ async def chat_event_generator(
                 item_id = planning_item_id or f"planning:{tool_record.id}"
                 current_event = process_events.get(item_id)
                 current_data = dict(current_event.data or {}) if current_event else {}
-                todos = current_data.get("todos")
-                if not isinstance(todos, list):
-                    todos = _find_todos(tool_output) or []
+                todos = _merge_todos(current_data.get("todos"), _find_todos(tool_output))
                 planning_status = (
                     _derive_planning_status(todos)
-                    if isinstance(todos, list)
+                    if todos
                     else current_event.status if current_event else "pending"
                 )
+                if (
+                    current_event is not None
+                    and _is_terminal_process_status(current_event.status)
+                    and not _is_terminal_process_status(planning_status)
+                ):
+                    todos = current_data.get("todos") if isinstance(current_data.get("todos"), list) else todos
+                    planning_status = current_event.status
                 current_data["tool_id"] = tool_record.id
                 current_data["todos"] = _jsonable(todos)
                 current_data["tool_output"] = tool_output
@@ -1733,6 +2418,7 @@ async def chat_event_generator(
                     tool_id=tool_record.id,
                     status=current_event.status,
                     result=current_data["result"],
+                    child_tools=current_data.get("child_tools"),
                 )
                 continue
 
@@ -1745,6 +2431,20 @@ async def chat_event_generator(
                 status=tool_status,
                 output=tool_output,
                 error=tool_record.error,
+            )
+
+        if prompt_debug_snapshot is not None and not prompt_debug_persisted:
+            persist_prompt_debug_snapshot()
+        if (
+            prompt_debug_snapshot is not None
+            and user_record is not None
+            and not prompt_debug_emitted
+        ):
+            prompt_debug_emitted = True
+            yield _sse_event(
+                "prompt_debug",
+                user_message_id=user_record.id,
+                prompt_debug=prompt_debug_snapshot,
             )
 
         assistant_message.content = "".join(assistant_fragments)
@@ -1761,7 +2461,16 @@ async def chat_event_generator(
     except Exception as exc:
         logger.error("Chat error", exc_info=True)
         db.rollback()
-        yield _sse_event("error", message=str(exc))
+        error_msg = str(exc).lower()
+        vision_keywords = ["vision", "image", "multimodal", "does not support", "unsupported"]
+        if any(kw in error_msg for kw in vision_keywords) and _count_images(user_message) > 0:
+            friendly_msg = (
+                "当前模型不支持图片识别，请在对话设置中切换到支持视觉的模型"
+                "（如 claude-3-5-sonnet、gpt-4o）"
+            )
+            yield _sse_event("error", message=friendly_msg)
+        else:
+            yield _sse_event("error", message=str(exc))
 
 
 @router.post("/conversations/{conv_id}/chat")
