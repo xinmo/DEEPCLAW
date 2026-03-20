@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from src.models import get_db
+from src.models import SessionLocal, get_db
 from src.models.industry_research import DeepResearch, IndustryEdge, IndustryNode, IndustryResearch
 from src.services.industry_research.agent_team import run_industry_research
 from src.services.industry_research.deep_researcher import run_deep_research
@@ -33,8 +33,12 @@ async def _persist_and_forward(
                 continue
             try:
                 event = json.loads(chunk[6:])
-                etype = event.get("type")
-                data = event.get("data", {})
+            except json.JSONDecodeError:
+                logger.warning("SSE event JSON parse error, skipping chunk")
+                continue
+            etype = event.get("type")
+            data = event.get("data", {})
+            try:
                 if etype == "graph_node":
                     node_key = data.get("id")
                     existing = db.query(IndustryNode).filter(
@@ -80,53 +84,73 @@ async def _persist_and_forward(
                     research.status = "completed"
                     research.progress = 100
                     db.commit()
-            except (json.JSONDecodeError, Exception) as e:
-                logger.warning("SSE persist error: %s", e)
+            except Exception as e:
+                logger.warning("SSE DB persist error (event=%s): %s", etype, e)
+                db.rollback()
     except Exception:
         if research:
-            research.status = "failed"
-            db.commit()
+            try:
+                research.status = "failed"
+                db.commit()
+            except Exception:
+                db.rollback()
         raise
 
 
 @router.get("/{research_id}/stream")
-def stream_research(research_id: str, db: Session = Depends(get_db)):
+async def stream_research(research_id: str, db: Session = Depends(get_db)):
     research = db.query(IndustryResearch).filter(IndustryResearch.id == research_id).first()
     if not research:
         raise HTTPException(status_code=404, detail="Research not found")
+    # Extract values before Session closes
+    r_query = research.query
+    r_depth = research.depth
 
     async def generate():
-        gen = run_industry_research(research_id, research.query, research.depth)
-        async for chunk in _persist_and_forward(research_id, gen, db):
-            yield chunk
+        with SessionLocal() as stream_db:
+            gen = run_industry_research(research_id, r_query, r_depth)
+            async for chunk in _persist_and_forward(research_id, gen, stream_db):
+                yield chunk
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 @router.get("/deep/{deep_id}/stream")
-def stream_deep_research(deep_id: str, db: Session = Depends(get_db)):
+async def stream_deep_research(deep_id: str, db: Session = Depends(get_db)):
     deep = db.query(DeepResearch).filter(DeepResearch.id == deep_id).first()
     if not deep:
         raise HTTPException(status_code=404, detail="Deep research not found")
     research = db.query(IndustryResearch).filter(IndustryResearch.id == deep.research_id).first()
+    # Extract values before Session closes
     context = research.query if research else ""
+    d_node_name = deep.node_name
+    d_research_id = deep.research_id
 
     async def generate():
-        async for chunk in run_deep_research(deep_id, deep.node_name, context):
-            yield chunk
-            if not chunk.startswith("data: "):
-                continue
-            try:
-                event = json.loads(chunk[6:])
+        with SessionLocal() as stream_db:
+            deep_record = stream_db.query(DeepResearch).filter(DeepResearch.id == deep_id).first()
+            if not deep_record:
+                return
+            async for chunk in run_deep_research(deep_id, d_node_name, context):
+                yield chunk
+                if not chunk.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(chunk[6:])
+                except json.JSONDecodeError:
+                    logger.warning("Deep SSE JSON parse error, skipping chunk")
+                    continue
                 etype = event.get("type")
-                if etype == "report_chunk":
-                    deep.report = (deep.report or "") + event["data"].get("chunk", "")
-                elif etype == "deep_data":
-                    deep.deep_data = event["data"]
-                elif etype == "done":
-                    deep.status = "completed"
-                db.commit()
-            except Exception as e:
-                logger.warning("Deep SSE persist error: %s", e)
+                try:
+                    if etype == "report_chunk":
+                        deep_record.report = (deep_record.report or "") + event["data"].get("chunk", "")
+                    elif etype == "deep_data":
+                        deep_record.deep_data = event["data"]
+                    elif etype == "done":
+                        deep_record.status = "completed"
+                    stream_db.commit()
+                except Exception as e:
+                    logger.warning("Deep SSE DB persist error (event=%s): %s", etype, e)
+                    stream_db.rollback()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers=SSE_HEADERS)
