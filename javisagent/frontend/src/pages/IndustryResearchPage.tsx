@@ -43,6 +43,7 @@ type ResearchAction =
   | { type: "START_DEEP"; deepId: string }
   | { type: "DEEP_SSE_EVENT"; event: SSEEvent }
   | { type: "SET_LOADING"; loading: boolean }
+  | { type: "RESET_GRAPH"; researchId: string }
   | { type: "SET_ERROR"; error: string | null };
 
 function reducer(state: ResearchState, action: ResearchAction): ResearchState {
@@ -127,10 +128,27 @@ function reducer(state: ResearchState, action: ResearchAction): ResearchState {
       if (event.type === "progress") {
         return { ...state, deepProgress: (event.data as { percent: number }).percent };
       }
+      if (event.type === "done") {
+        return { ...state, deepProgress: 100 };
+      }
+      if (event.type === "error") {
+        return { ...state, error: (event.data as { message: string }).message };
+      }
       return state;
     }
     case "SET_LOADING":
       return { ...state, loading: action.loading };
+    case "RESET_GRAPH":
+      return {
+        ...state,
+        researchId: action.researchId,
+        graphNodes: [],
+        graphEdges: [],
+        progress: 100,
+        agents: [],
+        logs: [],
+        error: null,
+      };
     case "SET_ERROR":
       return { ...state, error: action.error };
     default:
@@ -187,9 +205,9 @@ const IndustryResearchPage: React.FC = () => {
       dispatch({ type: "SET_LOADING", loading: true });
       dispatch({ type: "SET_ERROR", error: null });
       try {
+        esRef.current?.close();
         const { researchId } = await industryResearchApi.startResearch(query, depth);
         dispatch({ type: "START_RESEARCH", researchId, query, depth });
-        esRef.current?.close();
         esRef.current = industryResearchApi.streamResearch(
           researchId,
           (event) => {
@@ -243,6 +261,7 @@ const IndustryResearchPage: React.FC = () => {
       try {
         const { nodes, edges } = await industryResearchApi.getGraph(researchId);
         // Reconstruct state from saved graph
+        dispatch({ type: "RESET_GRAPH", researchId });
         dispatch({ type: "SET_VIEW", view: "graph" });
         nodes.forEach((node) =>
           dispatch({ type: "SSE_EVENT", event: { type: "graph_node", data: node } }),
