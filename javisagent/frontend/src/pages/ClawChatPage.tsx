@@ -1,4 +1,4 @@
-import React, { useCallback, useDeferredValue, useEffect, useReducer, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
 import {
   Avatar,
   Button,
@@ -32,17 +32,21 @@ import ReactMarkdown from "react-markdown";
 
 import DirectoryBrowser from "../components/Claw/DirectoryBrowser";
 import PlanningCard from "../components/Claw/PlanningCard";
+import PromptDebugPanel from "../components/Claw/PromptDebugPanel";
 import ShellExecutionCard from "../components/Claw/ShellExecutionCard";
 import SubAgentCard from "../components/Claw/SubAgentCard";
 import ToolCallCard from "../components/Claw/ToolCallCard";
-import { clawApi } from "../services/clawApi";
-import type { ClawConversation, ClawSkillSummary, ModelInfo } from "../types/claw";
+import { dispatchClawStreamStatus } from "../constants/clawChat";
+import { clawApi, isAbortLikeError } from "../services/clawApi";
+import type { ClawConversation, ClawSkillSummary, ContentBlock, ModelInfo } from "../types/claw";
 import {
   buildHistoryTimeline,
   initialTimelineState,
   mergeAdjacentAssistantBubbles,
   timelineReducer,
   type ChatTimelineItem,
+  type TimelineAction,
+  type TimelineState,
 } from "./clawTimeline";
 
 const BOTTOM_LOCK_THRESHOLD = 96;
@@ -120,15 +124,51 @@ function findExactSkillMatches(skills: ClawSkillSummary[], reference: string) {
   });
 }
 
-const ClawChatPage: React.FC = () => {
+interface ClawChatPageProps {
+  active?: boolean;
+}
+
+interface ConversationSessionState {
+  timeline: TimelineState;
+  messagesLoading: boolean;
+  sending: boolean;
+  hasLoadedHistory: boolean;
+}
+
+function createInitialConversationSessionState(): ConversationSessionState {
+  return {
+    timeline: {
+      ...initialTimelineState,
+      items: [...initialTimelineState.items],
+    },
+    messagesLoading: false,
+    sending: false,
+    hasLoadedHistory: false,
+  };
+}
+
+const EMPTY_CONVERSATION_SESSION = createInitialConversationSessionState();
+
+function readFileAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const ClawChatPage: React.FC<ClawChatPageProps> = ({ active = true }) => {
   const [conversations, setConversations] = useState<ClawConversation[]>([]);
   const [currentConvId, setCurrentConvId] = useState<string | null>(() =>
     localStorage.getItem("claw_chat_conv_id"),
   );
   const [convLoading, setConvLoading] = useState(false);
-  const [messagesLoading, setMessagesLoading] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [conversationSessions, setConversationSessions] = useState<
+    Record<string, ConversationSessionState>
+  >({});
   const [inputValue, setInputValue] = useState("");
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [availableSkills, setAvailableSkills] = useState<ClawSkillSummary[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<ClawSkillSummary | null>(null);
   const [workingDirectory, setWorkingDirectory] = useState("");
@@ -143,17 +183,23 @@ const ClawChatPage: React.FC = () => {
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const [pendingMessageCount, setPendingMessageCount] = useState(0);
   const [createForm] = Form.useForm();
-  const [timelineState, dispatchTimeline] = useReducer(timelineReducer, initialTimelineState);
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
-  const activeRequestControllerRef = useRef<AbortController | null>(null);
-  const abortRequestedRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeRequestControllersRef = useRef<Record<string, AbortController | null>>({});
+  const abortRequestedRef = useRef<Record<string, boolean>>({});
   const shouldSnapToBottomRef = useRef(true);
   const lastSeenItemCountRef = useRef(0);
-  const displayTimelineItems = mergeAdjacentAssistantBubbles(timelineState.items);
-  const timelineItemCount = displayTimelineItems.length;
 
   const currentConversation =
     conversations.find((conversation) => conversation.id === currentConvId) || null;
+  const currentSession = currentConvId
+    ? conversationSessions[currentConvId] || EMPTY_CONVERSATION_SESSION
+    : null;
+  const timelineState = currentSession?.timeline || EMPTY_CONVERSATION_SESSION.timeline;
+  const messagesLoading = currentSession?.messagesLoading ?? false;
+  const sending = currentSession?.sending ?? false;
+  const displayTimelineItems = mergeAdjacentAssistantBubbles(timelineState.items);
+  const timelineItemCount = displayTimelineItems.length;
   const filteredConversations = conversations.filter((conversation) =>
     conversation.title.toLowerCase().includes(deferredSearchKeyword.toLowerCase()),
   );
@@ -174,6 +220,58 @@ const ClawChatPage: React.FC = () => {
           })
           .slice(0, 8)
       : [];
+
+  const updateConversationSession = useCallback(
+    (
+      conversationId: string,
+      updater: (session: ConversationSessionState) => ConversationSessionState,
+    ) => {
+      setConversationSessions((current) => {
+        const session = current[conversationId] || createInitialConversationSessionState();
+        const nextSession = updater(session);
+        if (nextSession === session) {
+          return current;
+        }
+        return {
+          ...current,
+          [conversationId]: nextSession,
+        };
+      });
+    },
+    [],
+  );
+
+  const applyTimelineAction = useCallback(
+    (conversationId: string, action: TimelineAction) => {
+      updateConversationSession(conversationId, (session) => {
+        const nextTimeline = timelineReducer(session.timeline, action);
+        if (nextTimeline === session.timeline) {
+          return session;
+        }
+        return {
+          ...session,
+          timeline: nextTimeline,
+        };
+      });
+    },
+    [updateConversationSession],
+  );
+
+  const clearConversationSession = useCallback((conversationId: string) => {
+    activeRequestControllersRef.current[conversationId]?.abort();
+    delete activeRequestControllersRef.current[conversationId];
+    delete abortRequestedRef.current[conversationId];
+
+    setConversationSessions((current) => {
+      if (!(conversationId in current)) {
+        return current;
+      }
+
+      const nextSessions = { ...current };
+      delete nextSessions[conversationId];
+      return nextSessions;
+    });
+  }, []);
 
   const loadConversations = useCallback(async () => {
     setConvLoading(true);
@@ -209,6 +307,45 @@ const ClawChatPage: React.FC = () => {
     }
   }, []);
 
+  const handleImageFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (fileArray.length === 0) return;
+
+    const remaining = 4 - attachedImages.length;
+    if (remaining <= 0) {
+      message.warning("最多上传 4 张图片");
+      return;
+    }
+
+    const toProcess = fileArray.slice(0, remaining);
+    const oversized = toProcess.filter((f) => f.size > 10 * 1024 * 1024);
+    if (oversized.length > 0) {
+      message.error(`图片大小不能超过 10MB（${oversized.map((f) => f.name).join(", ")}）`);
+      return;
+    }
+
+    try {
+      const dataUrls = await Promise.all(toProcess.map(readFileAsDataURL));
+      setAttachedImages((prev) => [...prev, ...dataUrls].slice(0, 4));
+    } catch {
+      message.error("图片读取失败");
+    }
+  }, [attachedImages.length]);
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const items = Array.from(e.clipboardData.items);
+      const imageItems = items.filter((item) => item.type.startsWith("image/"));
+      if (imageItems.length === 0) return;
+      e.preventDefault();
+      const files = imageItems
+        .map((item) => item.getAsFile())
+        .filter((f): f is File => f !== null);
+      void handleImageFiles(files);
+    },
+    [handleImageFiles],
+  );
+
   useEffect(() => {
     void loadConversations();
     void loadModels();
@@ -240,27 +377,83 @@ const ClawChatPage: React.FC = () => {
   }, [currentConversation]);
 
   useEffect(() => {
+    const activeStreamConversationId =
+      (currentConvId && conversationSessions[currentConvId]?.sending ? currentConvId : null) ||
+      Object.entries(conversationSessions).find(([, session]) => session.sending)?.[0] ||
+      null;
+    const activeStreamConversationTitle =
+      conversations.find((conversation) => conversation.id === activeStreamConversationId)?.title ||
+      null;
+
+    dispatchClawStreamStatus({
+      sending: Boolean(activeStreamConversationId),
+      conversationId: activeStreamConversationId,
+      conversationTitle: activeStreamConversationTitle,
+    });
+  }, [conversationSessions, conversations, currentConvId]);
+
+  useEffect(() => {
     if (!currentConvId) {
-      dispatchTimeline({ type: "reset", items: [] });
       return;
     }
 
+    if (currentSession?.hasLoadedHistory || currentSession?.messagesLoading) {
+      return;
+    }
+
+    let cancelled = false;
+
+    updateConversationSession(currentConvId, (session) =>
+      session.messagesLoading
+        ? session
+        : {
+            ...session,
+            messagesLoading: true,
+          },
+    );
+
     const loadMessages = async () => {
-      setMessagesLoading(true);
       try {
-        dispatchTimeline({
-          type: "reset",
-          items: buildHistoryTimeline(await clawApi.getMessages(currentConvId)),
-        });
+        const messages = await clawApi.getMessages(currentConvId);
+        if (cancelled) {
+          return;
+        }
+
+        updateConversationSession(currentConvId, (session) => ({
+          ...session,
+          timeline:
+            session.sending || session.timeline.items.length > 0
+              ? session.timeline
+              : timelineReducer(session.timeline, {
+                  type: "reset",
+                  items: buildHistoryTimeline(messages),
+                }),
+          messagesLoading: false,
+          hasLoadedHistory: true,
+        }));
       } catch {
+        if (cancelled) {
+          return;
+        }
+
+        updateConversationSession(currentConvId, (session) => ({
+          ...session,
+          messagesLoading: false,
+        }));
         message.error("加载消息失败");
-      } finally {
-        setMessagesLoading(false);
       }
     };
 
     void loadMessages();
-  }, [currentConvId]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentConvId,
+    currentSession?.hasLoadedHistory,
+    updateConversationSession,
+  ]);
 
   useEffect(() => {
     setIsPinnedToBottom(true);
@@ -321,8 +514,30 @@ const ClawChatPage: React.FC = () => {
   }, [timelineState.items, timelineItemCount, isPinnedToBottom, scrollTimelineToBottom, sending]);
 
   useEffect(() => () => {
-    activeRequestControllerRef.current?.abort();
+    Object.values(activeRequestControllersRef.current).forEach((controller) => controller?.abort());
   }, []);
+
+  useEffect(() => () => {
+    dispatchClawStreamStatus({
+      sending: false,
+      conversationId: null,
+      conversationTitle: null,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      scrollTimelineToBottom(sending ? "smooth" : "auto");
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [active, scrollTimelineToBottom, sending]);
 
   const handleTimelineScroll = useCallback(() => {
     const container = timelineContainerRef.current;
@@ -337,15 +552,18 @@ const ClawChatPage: React.FC = () => {
   }, [acknowledgeLatest, isNearBottom, timelineItemCount]);
 
   const handleStopMessage = () => {
-    if (!sending) {
+    if (!currentConvId || !sending) {
       return;
     }
 
-    abortRequestedRef.current = true;
-    activeRequestControllerRef.current?.abort();
-    activeRequestControllerRef.current = null;
-    dispatchTimeline({ type: "finalizeStream" });
-    setSending(false);
+    abortRequestedRef.current[currentConvId] = true;
+    activeRequestControllersRef.current[currentConvId]?.abort();
+    activeRequestControllersRef.current[currentConvId] = null;
+    updateConversationSession(currentConvId, (session) => ({
+      ...session,
+      sending: false,
+      timeline: timelineReducer(session.timeline, { type: "finalizeStream" }),
+    }));
     message.info("已终止当前回复");
   };
 
@@ -358,6 +576,8 @@ const ClawChatPage: React.FC = () => {
     if (!currentConvId || sending) {
       return;
     }
+
+    const conversationId = currentConvId;
 
     let turnSkill = selectedSkill;
     let userMessage = inputValue.trim();
@@ -379,54 +599,85 @@ const ClawChatPage: React.FC = () => {
       }
     }
 
-    if (!userMessage) {
+    if (!userMessage && attachedImages.length === 0) {
       return;
     }
+    const buildContent = (): string | ContentBlock[] => {
+      if (attachedImages.length === 0) {
+        return userMessage;
+      }
+      const blocks: ContentBlock[] = [];
+      if (userMessage.trim()) {
+        blocks.push({ type: "text", text: userMessage });
+      }
+      attachedImages.forEach((url) => {
+        blocks.push({ type: "image_url", image_url: { url } });
+      });
+      return blocks;
+    };
+    const messageContent = buildContent();
     const controller = new AbortController();
-    abortRequestedRef.current = false;
-    activeRequestControllerRef.current = controller;
+    abortRequestedRef.current[conversationId] = false;
+    activeRequestControllersRef.current[conversationId] = controller;
     shouldSnapToBottomRef.current = true;
     setInputValue("");
+    setAttachedImages([]);
     setSelectedSkill(null);
-    setSending(true);
-    dispatchTimeline({
-      type: "appendUser",
-      content: userMessage,
-      selectedSkill: turnSkill ? getPreferredSkillAlias(turnSkill) : undefined,
+    updateConversationSession(conversationId, (session) => {
+      const withUserMessage = timelineReducer(session.timeline, {
+        type: "appendUser",
+        content: typeof messageContent === "string" ? messageContent : userMessage,
+        selectedSkill: turnSkill ? getPreferredSkillAlias(turnSkill) : undefined,
+      });
+      const withAssistantTurn = timelineReducer(withUserMessage, { type: "startAssistantTurn" });
+
+      return {
+        ...session,
+        timeline: withAssistantTurn,
+        messagesLoading: false,
+        sending: true,
+        hasLoadedHistory: true,
+      };
     });
-    dispatchTimeline({ type: "startAssistantTurn" });
 
     try {
       await clawApi.sendMessage(
-        currentConvId,
-        { content: userMessage, selected_skill: turnSkill?.name },
+        conversationId,
+        { content: messageContent, selected_skill: turnSkill?.name },
         (event) => {
-          dispatchTimeline({ type: "applyEvent", event });
+          applyTimelineAction(conversationId, { type: "applyEvent", event });
           if (event.type === "error") {
             message.error(event.message || "对话流出错");
           }
         },
         (error) => {
-          if (abortRequestedRef.current && error.name === "AbortError") {
+          if (abortRequestedRef.current[conversationId] && isAbortLikeError(error)) {
             return;
           }
-          dispatchTimeline({ type: "finalizeStream" });
+          applyTimelineAction(conversationId, { type: "finalizeStream" });
           message.error(`连接失败: ${error.message}`);
         },
         controller.signal,
       );
     } catch (error) {
-      if (abortRequestedRef.current && error instanceof Error && error.name === "AbortError") {
+      if (abortRequestedRef.current[conversationId] && isAbortLikeError(error)) {
         return;
       }
-      dispatchTimeline({ type: "finalizeStream" });
+      applyTimelineAction(conversationId, { type: "finalizeStream" });
       message.error(error instanceof Error ? error.message : "发送消息失败");
     } finally {
-      if (activeRequestControllerRef.current === controller) {
-        activeRequestControllerRef.current = null;
+      if (activeRequestControllersRef.current[conversationId] === controller) {
+        activeRequestControllersRef.current[conversationId] = null;
       }
-      abortRequestedRef.current = false;
-      setSending(false);
+      abortRequestedRef.current[conversationId] = false;
+      updateConversationSession(conversationId, (session) =>
+        session.sending
+          ? {
+              ...session,
+              sending: false,
+            }
+          : session,
+      );
     }
   };
 
@@ -441,6 +692,10 @@ const ClawChatPage: React.FC = () => {
       message.success("对话创建成功");
       setCreateModalOpen(false);
       createForm.resetFields();
+      updateConversationSession(conversation.id, () => ({
+        ...createInitialConversationSessionState(),
+        hasLoadedHistory: true,
+      }));
       await loadConversations();
       setCurrentConvId(conversation.id);
     } catch (error: unknown) {
@@ -530,6 +785,7 @@ const ClawChatPage: React.FC = () => {
             ) : (
               <span style={{ color: "#8c8c8c" }}>(empty message)</span>
             )}
+            {item.promptDebug ? <PromptDebugPanel snapshot={item.promptDebug} /> : null}
           </div>
         </div>
       );
@@ -590,6 +846,7 @@ const ClawChatPage: React.FC = () => {
           toolId={item.toolId}
           transcript={item.transcript}
           result={item.result}
+          childTools={item.childTools}
         />
       </div>
     );
@@ -634,6 +891,7 @@ const ClawChatPage: React.FC = () => {
                     void clawApi
                       .deleteConversation(conversation.id)
                       .then(async () => {
+                        clearConversationSession(conversation.id);
                         message.success("对话已删除");
                         await loadConversations();
                         if (currentConvId === conversation.id) {
