@@ -1,3 +1,33 @@
+export type ResearchDepth = "quick" | "standard" | "deep";
+export type ResearchView = "home" | "dashboard" | "graph" | "deep";
+export type ResearchStatus = "running" | "completed" | "failed";
+
+export interface ResearchHistory {
+  id: string;
+  query: string;
+  depth: ResearchDepth;
+  status: ResearchStatus;
+  createdAt: string;
+  updatedAt?: string;
+  nodeCount?: number;
+  companyCount?: number;
+  progress?: number;
+}
+
+export interface SSEEvent {
+  type:
+    | "agent_status"
+    | "log"
+    | "graph_node"
+    | "graph_edge"
+    | "progress"
+    | "report_chunk"
+    | "deep_data"
+    | "done"
+    | "error";
+  data: Record<string, unknown>;
+}
+
 export interface AgentStatus {
   agentId: string;
   name: string;

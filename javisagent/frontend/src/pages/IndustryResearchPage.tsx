@@ -67,7 +67,7 @@ function reducer(state: ResearchState, action: ResearchAction): ResearchState {
     case "SSE_EVENT": {
       const { event } = action;
       if (event.type === "agent_status") {
-        const d = event.data as AgentStatus;
+        const d = event.data as unknown as AgentStatus;
         const idx = state.agents.findIndex((a) => a.agentId === d.agentId);
         const agents =
           idx >= 0
@@ -76,10 +76,10 @@ function reducer(state: ResearchState, action: ResearchAction): ResearchState {
         return { ...state, agents };
       }
       if (event.type === "log") {
-        return { ...state, logs: [...state.logs, event.data as LogEntry].slice(-100) };
+        return { ...state, logs: [...state.logs, event.data as unknown as LogEntry].slice(-100) };
       }
       if (event.type === "graph_node") {
-        const node = event.data as GraphNode;
+        const node = event.data as unknown as GraphNode;
         const idx = state.graphNodes.findIndex((n) => n.id === node.id);
         const graphNodes =
           idx >= 0
@@ -88,7 +88,7 @@ function reducer(state: ResearchState, action: ResearchAction): ResearchState {
         return { ...state, graphNodes };
       }
       if (event.type === "graph_edge") {
-        return { ...state, graphEdges: [...state.graphEdges, event.data as GraphEdge] };
+        return { ...state, graphEdges: [...state.graphEdges, event.data as unknown as GraphEdge] };
       }
       if (event.type === "progress") {
         return { ...state, progress: (event.data as { percent: number }).percent };
@@ -123,7 +123,7 @@ function reducer(state: ResearchState, action: ResearchAction): ResearchState {
         };
       }
       if (event.type === "deep_data") {
-        return { ...state, deepData: event.data as DeepResearchData };
+        return { ...state, deepData: event.data as unknown as DeepResearchData };
       }
       if (event.type === "progress") {
         return { ...state, deepProgress: (event.data as { percent: number }).percent };
@@ -264,10 +264,10 @@ const IndustryResearchPage: React.FC = () => {
         dispatch({ type: "RESET_GRAPH", researchId });
         dispatch({ type: "SET_VIEW", view: "graph" });
         nodes.forEach((node) =>
-          dispatch({ type: "SSE_EVENT", event: { type: "graph_node", data: node } }),
+          dispatch({ type: "SSE_EVENT", event: { type: "graph_node", data: node as unknown as Record<string, unknown> } }),
         );
         edges.forEach((edge) =>
-          dispatch({ type: "SSE_EVENT", event: { type: "graph_edge", data: edge } }),
+          dispatch({ type: "SSE_EVENT", event: { type: "graph_edge", data: edge as unknown as Record<string, unknown> } }),
         );
       } catch {
         dispatch({ type: "SET_ERROR", error: "加载历史图谱失败" });
