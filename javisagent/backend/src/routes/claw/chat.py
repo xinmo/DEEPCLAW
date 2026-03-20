@@ -65,11 +65,12 @@ def _extract_text_content(content: str | list) -> str:
     """从多模态 content 中提取纯文本，用于存入数据库。"""
     if isinstance(content, str):
         return content
-    parts = [
-        block["text"]
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "text"
-    ]
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block["text"])
     return " ".join(parts) or "[图片]"
 
 
@@ -77,9 +78,10 @@ def _count_images(content: str | list) -> int:
     """统计 content 中的图片数量。"""
     if isinstance(content, str):
         return 0
+    _image_block_types = {"image_url", "image"}
     return sum(
         1 for block in content
-        if isinstance(block, dict) and block.get("type") == "image_url"
+        if isinstance(block, dict) and block.get("type") in _image_block_types
     )
 
 
