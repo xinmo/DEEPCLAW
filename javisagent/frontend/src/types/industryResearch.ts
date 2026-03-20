@@ -35,3 +35,41 @@ export interface GraphEdge {
   source: string;
   target: string;
 }
+
+export interface CompanyFinancial {
+  name: string;
+  ticker: string;
+  revenue: number;
+  grossMargin: number;
+  pe: number;
+  domesticContribution: number;
+}
+
+export interface MarketShare {
+  name: string;
+  country: string;
+  share: number;
+}
+
+export interface Material {
+  name: string;
+  analysis?: string;
+}
+
+export interface BarrierItem {
+  dimension: string;
+  score: number;
+}
+
+export interface RiskItem {
+  level: "high" | "medium" | "low";
+  description: string;
+}
+
+export interface DeepResearchData {
+  marketShares: MarketShare[];
+  companies: CompanyFinancial[];
+  materials: Material[];
+  barriers: BarrierItem[];
+  risks: RiskItem[];
+}
