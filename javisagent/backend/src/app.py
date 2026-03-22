@@ -10,7 +10,7 @@ from src.models.industry_research import DeepResearch, IndustryEdge, IndustryNod
 from src.routes import document
 from src.routes.channels import router as channels_router
 from src.routes.industry_research import research_router as industry_research_router, stream_router as industry_stream_router
-from src.routes.claw import conversations_router, chat_router as claw_chat_router, skills_router
+from src.routes.claw import conversations_router, chat_router as claw_chat_router, skills_router, mcp_router as claw_mcp_router
 from src.routes.claw.prompts import router as claw_prompts_router
 from src.routes.knowledge import chat_router, documents_router, graph_router, kb_router
 from src.routes.translate import clone_router, ws_router
@@ -44,6 +44,7 @@ app.include_router(conversations_router)
 app.include_router(claw_chat_router)
 app.include_router(claw_prompts_router, prefix="/api/claw", tags=["claw-prompts"])
 app.include_router(skills_router, prefix="/api/claw", tags=["claw-skills"])
+app.include_router(claw_mcp_router, prefix="/api/claw", tags=["claw-mcp"])
 app.include_router(channels_router)
 app.include_router(industry_research_router)
 app.include_router(industry_stream_router)

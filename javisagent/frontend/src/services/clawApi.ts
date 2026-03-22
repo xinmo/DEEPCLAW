@@ -88,7 +88,14 @@ function normalizeMessage(raw: RawClawMessage): ClawMessage {
 
 async function expectJson<T>(response: Response, errorMessage: string): Promise<T> {
   if (!response.ok) {
-    throw new Error(errorMessage);
+    try {
+      const errBody = await response.json() as { detail?: string };
+      const detail = errBody?.detail;
+      throw new Error(typeof detail === "string" ? detail : errorMessage);
+    } catch (e) {
+      if (e instanceof SyntaxError) throw new Error(errorMessage);
+      throw e;
+    }
   }
   return response.json() as Promise<T>;
 }

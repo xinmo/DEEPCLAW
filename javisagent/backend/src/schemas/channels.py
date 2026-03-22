@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -43,3 +45,31 @@ class QQChannelConfigResponse(BaseModel):
     runtime: ChannelRuntimeStatus
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class ChannelLogEntry(BaseModel):
+    timestamp: str
+    level: str
+    source: str
+    message: str
+
+
+class ChannelConnectivityCheck(BaseModel):
+    key: str
+    label: str
+    status: Literal["success", "warning", "error", "info"]
+    message: str
+
+
+class QQChannelTestResponse(BaseModel):
+    success: bool
+    state: Literal["success", "warning", "error"]
+    message: str
+    tested_at: str
+    checks: list[ChannelConnectivityCheck] = Field(default_factory=list)
+    runtime: ChannelRuntimeStatus
+
+
+class QQChannelLogsResponse(BaseModel):
+    channel: str
+    entries: list[ChannelLogEntry] = Field(default_factory=list)

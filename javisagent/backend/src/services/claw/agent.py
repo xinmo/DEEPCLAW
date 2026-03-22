@@ -1,19 +1,11 @@
 import os
-import sys
 from pathlib import Path
-from typing import Optional
+from collections.abc import Callable
+from typing import Any, Optional
 
-LOCAL_DEEPAGENTS_ROOT = Path(__file__).resolve().parents[4] / "libs" / "deepagents"
-if LOCAL_DEEPAGENTS_ROOT.exists():
-    local_deepagents = str(LOCAL_DEEPAGENTS_ROOT)
-    if local_deepagents not in sys.path:
-        sys.path.insert(0, local_deepagents)
+from ._bootstrap import ensure_local_dependency_paths
 
-LOCAL_CLI_ROOT = Path(__file__).resolve().parents[4] / "libs" / "cli"
-if LOCAL_CLI_ROOT.exists():
-    local_cli = str(LOCAL_CLI_ROOT)
-    if local_cli not in sys.path:
-        sys.path.insert(0, local_cli)
+ensure_local_dependency_paths()
 
 from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
@@ -21,12 +13,11 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import EditResult, FileUploadResponse, WriteResult
 from deepagents.middleware.summarization import create_summarization_tool_middleware
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
 import logging
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .local_context import ClawLocalContextMiddleware
+from .prompt_debug import ClawPromptDebugCaptureMiddleware
 from .skill_registry import get_enabled_skill_sources
 from .tools import web_search, fetch_url
 
@@ -39,6 +30,45 @@ CLAW_MEMORY_FILE = CLAW_MEMORY_DIR / "AGENTS.md"
 CLAW_SKILLS_DIR = CLAW_USER_HOME / ".agents" / "skills"
 CLAW_CONVERSATION_HISTORY_DIR = CLAW_USER_HOME / ".conversation_history"
 CLAW_MEMORY_SOURCE = "/memory/AGENTS.md"
+
+
+def _create_llm(llm_model: str, model_config: dict[str, str], api_key: str):
+    provider = model_config["provider"]
+
+    if provider == "openai":
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError as exc:
+            msg = (
+                "langchain-openai is required for OpenAI-compatible models. "
+                "Install backend requirements before starting Claw chat."
+            )
+            raise ImportError(msg) from exc
+
+        return ChatOpenAI(
+            model=llm_model,
+            api_key=api_key,
+            base_url=model_config.get("base_url"),
+            streaming=True,
+        )
+
+    if provider == "anthropic":
+        try:
+            from langchain_anthropic import ChatAnthropic
+        except ImportError as exc:
+            msg = (
+                "langchain-anthropic is required for Anthropic models. "
+                "Install backend requirements before starting Claw chat."
+            )
+            raise ImportError(msg) from exc
+
+        return ChatAnthropic(
+            model=llm_model,
+            api_key=api_key,
+            streaming=True,
+        )
+
+    raise ValueError(f"Unsupported model provider: {provider}")
 
 
 class ReadOnlyFilesystemBackend(FilesystemBackend):
@@ -342,13 +372,14 @@ SYSTEM_PROMPT_TEMPLATE = """# Deep Agent - 编程助手
 """
 
 
-def create_claw_agent(
+async def create_claw_agent(
     working_directory: str,
     llm_model: str = "claude-opus-4-6",
     conversation_id: Optional[str] = None,
     custom_system_prompt: Optional[str] = None,
     prompt_overrides: Optional[dict[str, str]] = None,
     turn_instruction: Optional[str] = None,
+    debug_capture_callback: Optional[Callable[[dict[str, Any]], None]] = None,
 ):
     """
     创建 Claw Deep Agent 实例
@@ -390,21 +421,7 @@ def create_claw_agent(
         if not api_key:
             raise ValueError(f"未设置 API Key: {model_config['api_key_env']}")
 
-        if model_config["provider"] == "openai":
-            llm = ChatOpenAI(
-                model=llm_model,
-                api_key=api_key,
-                base_url=model_config.get("base_url"),
-                streaming=True
-            )
-        elif model_config["provider"] == "anthropic":
-            llm = ChatAnthropic(
-                model=llm_model,
-                api_key=api_key,
-                streaming=True
-            )
-        else:
-            raise ValueError(f"不支持的提供商: {model_config['provider']}")
+        llm = _create_llm(llm_model, model_config, api_key)
 
         # 构建工具列表
         tools = [fetch_url]
@@ -415,6 +432,25 @@ def create_claw_agent(
             logger.info("Web search tool enabled")
         else:
             logger.warning("TAVILY_API_KEY not set, web_search tool disabled")
+
+        # 加载 MCP 工具（复用 deepagents_cli 的 mcp_tools 模块）
+        try:
+            from deepagents_cli.mcp_tools import load_mcp_config, _load_tools_from_config
+            from pathlib import Path as _Path
+            _mcp_config_path = _Path.home() / ".deepagents" / ".mcp.json"
+            if _mcp_config_path.exists():
+                _mcp_config = load_mcp_config(_mcp_config_path)
+                if _mcp_config.get("mcpServers"):
+                    _mcp_tools, _mcp_manager, _mcp_server_infos = await _load_tools_from_config(_mcp_config)
+                    if _mcp_tools:
+                        tools.extend(_mcp_tools)
+                        logger.info(f"Loaded {len(_mcp_tools)} MCP tools from {len(_mcp_server_infos)} server(s)")
+            else:
+                logger.debug("No MCP config found at %s, skipping MCP tools", _mcp_config_path)
+        except ImportError:
+            logger.debug("deepagents_cli not available, skipping MCP tools")
+        except Exception as _mcp_exc:
+            logger.warning("Failed to load MCP tools, continuing without them: %s", _mcp_exc)
 
         from .prompt_registry import get_deep_agent_prompt_overrides
 
@@ -433,6 +469,10 @@ def create_claw_agent(
                 ),
             ),
         ]
+        if debug_capture_callback is not None:
+            agent_middleware.append(
+                ClawPromptDebugCaptureMiddleware(debug_capture_callback)
+            )
 
         # 创建 Agent
         # Deep Agent 内置了文件系统、Shell、规划和子智能体功能

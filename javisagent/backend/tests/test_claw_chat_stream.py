@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import types
+import uuid
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -26,6 +27,10 @@ fake_prompt_registry.get_current_prompt_bundle = lambda: {}
 fake_prompt_registry.get_system_prompt_from_bundle = lambda bundle: bundle.get("system", "")
 fake_prompt_registry.normalize_prompt_bundle = lambda bundle: dict(bundle or {})
 sys.modules["src.services.claw.prompt_registry"] = fake_prompt_registry
+
+fake_prompt_debug = types.ModuleType("src.services.claw.prompt_debug")
+fake_prompt_debug.build_prompt_debug_snapshot = lambda **kwargs: {"captured_request": kwargs.get("captured_request", {})}
+sys.modules["src.services.claw.prompt_debug"] = fake_prompt_debug
 
 fake_skill_registry = types.ModuleType("src.services.claw.skill_registry")
 fake_skill_registry.extract_slash_skill_command = lambda message: (None, message)
@@ -416,6 +421,85 @@ def build_task_internal_namespace_chunks():
     ]
 
 
+def build_task_child_tool_chunks():
+    return [
+        (
+            (),
+            "messages",
+            (
+                AIMessage(
+                    content=[
+                        {
+                            "type": "tool_call",
+                            "id": "call_task_child_1",
+                            "name": "task",
+                            "args": {"description": "Inspect repository layout"},
+                        }
+                    ]
+                ),
+                {},
+            ),
+        ),
+        (
+            ("worker",),
+            "messages",
+            (
+                AIMessage(
+                    content=[
+                        {
+                            "type": "tool_call",
+                            "id": "call_glob_child_1",
+                            "name": "glob",
+                            "args": {"pattern": "**/*.py"},
+                        }
+                    ]
+                ),
+                {},
+            ),
+        ),
+        (
+            ("worker",),
+            "messages",
+            (
+                ToolMessage(
+                    content=["src/main.py", "src/routes/claw/chat.py"],
+                    tool_call_id="call_glob_child_1",
+                    name="glob",
+                ),
+                {},
+            ),
+        ),
+        (
+            ("worker",),
+            "messages",
+            (
+                AIMessage(content=[{"type": "text", "text": "Indexed project files."}]),
+                {},
+            ),
+        ),
+        (
+            (),
+            "messages",
+            (
+                ToolMessage(
+                    content="Subagent finished repository inspection.",
+                    tool_call_id="call_task_child_1",
+                    name="task",
+                ),
+                {},
+            ),
+        ),
+        (
+            ("worker",),
+            "messages",
+            (
+                AIMessage(content=[{"type": "text", "text": "Final note after completion."}]),
+                {},
+            ),
+        ),
+    ]
+
+
 def build_read_file_fallback_chunks():
     return [
         (
@@ -632,8 +716,10 @@ async def test_chat_stream_backfills_glob_args_after_start(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_persists_partial_history_for_refresh(tmp_path, monkeypatch):
-    session_factory = build_file_session_factory(tmp_path / "claw-refresh.db")
+async def test_chat_stream_persists_partial_history_for_refresh(monkeypatch):
+    temp_dir = BACKEND_ROOT / "tests" / ".tmp" / f"chat-refresh-{uuid.uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    session_factory = build_file_session_factory(temp_dir / "claw-refresh.db")
     db = session_factory()
     conversation = ClawConversation(
         title="Refresh persistence",
@@ -681,6 +767,86 @@ async def test_chat_stream_persists_partial_history_for_refresh(tmp_path, monkey
     assert any(entry["kind"] == "shell" for entry in assistant_message["metadata"]["timeline"])
     assert any(tool_call["tool_name"] == "shell" for tool_call in assistant_message["tool_calls"])
     assert any(process_event["kind"] == "shell" for process_event in assistant_message["process_events"])
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_emits_and_persists_prompt_debug_for_first_turn(monkeypatch):
+    db = build_session()
+    conversation = ClawConversation(
+        title="Prompt debug",
+        working_directory=str(Path.cwd()),
+        llm_model="deepseek-chat",
+    )
+    db.add(conversation)
+    db.commit()
+    db.refresh(conversation)
+
+    fake_agent = FakeAgent(
+        [
+            (
+                (),
+                "messages",
+                (
+                    AIMessage(content=[{"type": "text", "text": "debug ready"}]),
+                    {},
+                ),
+            ),
+        ]
+    )
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_create_claw_agent(**kwargs):
+        captured_kwargs.update(kwargs)
+        callback = kwargs.get("debug_capture_callback")
+        assert callable(callback)
+        callback(
+            {
+                "captured_at": "2026-03-16T00:00:00+00:00",
+                "system_prompt": "Final system prompt",
+                "message_count": 1,
+                "messages": [
+                    {
+                        "role": "user",
+                        "type": "human",
+                        "content_text": "show me the debug context",
+                    }
+                ],
+                "tool_count": 1,
+                "tools": [
+                    {
+                        "name": "read_file",
+                        "description": "Read file contents",
+                    }
+                ],
+                "state": {
+                    "local_context": "## Local Context\n\n**Current Directory**: `/repo`",
+                    "memory_contents": {},
+                    "skills_metadata": [],
+                },
+            }
+        )
+        return fake_agent
+
+    monkeypatch.setattr(chat_route, "create_claw_agent", fake_create_claw_agent)
+
+    events = await collect_events(
+        chat_route.chat_event_generator(
+            conv_id=conversation.id,
+            user_message="show me the debug context",
+            conversation=conversation,
+            db=db,
+        )
+    )
+
+    assert [event["type"] for event in events] == ["prompt_debug", "text", "done"]
+    assert events[0]["prompt_debug"]["captured_request"]["system_prompt"] == "Final system prompt"
+    assert callable(captured_kwargs["debug_capture_callback"])
+
+    messages = await chat_route.get_messages(conversation.id, db=db)
+    user_message = next(message for message in messages if message["role"] == "user")
+    assert user_message["metadata"]["prompt_debug"]["captured_request"]["system_prompt"] == (
+        "Final system prompt"
+    )
 
 
 @pytest.mark.asyncio

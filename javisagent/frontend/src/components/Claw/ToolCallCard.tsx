@@ -27,16 +27,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function getParsedToolInput(toolCall: ToolCall) {
+function getParsedToolInput(toolCall: ToolCall): unknown {
   return parseMaybeJson(toolCall.input);
 }
 
-function getToolInputRecord(toolCall: ToolCall) {
+function getToolInputRecord(toolCall: ToolCall): Record<string, unknown> | null {
   const parsed = getParsedToolInput(toolCall);
   return isRecord(parsed) ? parsed : null;
 }
 
-function getRawToolInputText(toolCall: ToolCall) {
+function getRawToolInputText(toolCall: ToolCall): string {
   const parsed = getParsedToolInput(toolCall);
   if (typeof parsed === "string" && parsed.trim()) {
     return normalizeTextPaths(parsed.trim());
@@ -50,7 +50,7 @@ function getRawToolInputText(toolCall: ToolCall) {
   return "";
 }
 
-function prettyValue(value: unknown) {
+function prettyValue(value: unknown): string {
   if (typeof value === "string") {
     return normalizeTextPaths(value);
   }
@@ -79,7 +79,7 @@ function parseMaybeJson(value: unknown): unknown {
   }
 }
 
-function getStringValueFromRecord(record: Record<string, unknown>, keys: string[]) {
+function getStringValueFromRecord(record: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) {
@@ -121,7 +121,7 @@ function formatSearchRecordEntry(record: Record<string, unknown>): string[] {
   return [];
 }
 
-function extractListEntriesFromString(value: string) {
+function extractListEntriesFromString(value: string): string[] {
   const trimmed = value.trim();
   if (!trimmed) {
     return [];
@@ -149,7 +149,7 @@ function extractListEntriesFromString(value: string) {
     .filter(Boolean);
 }
 
-function getSearchCollectionEntries(output: unknown) {
+function getSearchCollectionEntries(output: unknown): string[] {
   if (typeof output === "string") {
     return extractListEntriesFromString(output);
   }
@@ -166,7 +166,7 @@ function getSearchCollectionEntries(output: unknown) {
   return [];
 }
 
-function normalizeDisplayPath(path: string) {
+function normalizeDisplayPath(path: string): string {
   const windowsVirtualMatch = path.match(/^\/([a-zA-Z])\/(.+)$/);
   if (!windowsVirtualMatch) {
     return path;
@@ -176,7 +176,7 @@ function normalizeDisplayPath(path: string) {
   return `${drive.toUpperCase()}:\\${suffix.replaceAll("/", "\\")}`;
 }
 
-function normalizeTextPaths(text: string) {
+function normalizeTextPaths(text: string): string {
   return text.replace(/\/([a-zA-Z])\/[^\s)"'`]+/g, (match) => normalizeDisplayPath(match));
 }
 
@@ -243,7 +243,7 @@ function getToolPatternValue(toolCall: ToolCall) {
   return getRawToolInputText(toolCall);
 }
 
-function buildSearchTarget(toolCall: ToolCall) {
+function buildSearchTarget(toolCall: ToolCall): string {
   const pattern = getToolPatternValue(toolCall);
   const path = getToolPathValue(toolCall);
   const parts: string[] = [];
@@ -259,7 +259,7 @@ function buildSearchTarget(toolCall: ToolCall) {
   return parts.join(" ");
 }
 
-function buildSearchInputLines(toolCall: ToolCall) {
+function buildSearchInputLines(toolCall: ToolCall): string[] {
   const pattern = getToolPatternValue(toolCall);
   const path = getToolPathValue(toolCall);
   const input = getToolInputRecord(toolCall);
@@ -308,7 +308,7 @@ function buildSearchInputLines(toolCall: ToolCall) {
   return [];
 }
 
-function getNumericInputValue(toolCall: ToolCall, key: string) {
+function getNumericInputValue(toolCall: ToolCall, key: string): number | null {
   const input = getToolInputRecord(toolCall);
   if (!input) {
     return null;
@@ -318,7 +318,7 @@ function getNumericInputValue(toolCall: ToolCall, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function getReadFileLineRange(toolCall: ToolCall) {
+function getReadFileLineRange(toolCall: ToolCall): string {
   if (toolCall.toolName !== "read_file") {
     return "";
   }
@@ -354,7 +354,7 @@ function getReadFileLineRange(toolCall: ToolCall) {
   return `(lines ${firstLine}-${lastLine})`;
 }
 
-function summarizeToolInput(toolCall: ToolCall) {
+function summarizeToolInput(toolCall: ToolCall): string {
   if (toolCall.toolName === "web_search" && isRecord(toolCall.input)) {
     const query = toolCall.input.query;
     if (typeof query === "string" && query) {
@@ -372,7 +372,7 @@ function summarizeToolInput(toolCall: ToolCall) {
   return "";
 }
 
-function buildFileToolTitle(toolCall: ToolCall) {
+function buildFileToolTitle(toolCall: ToolCall): { action: string; target: string } {
   if (toolCall.toolName === "read_file") {
     const path = getToolPathValue(toolCall);
     const lineRange = getReadFileLineRange(toolCall);
@@ -397,7 +397,7 @@ function buildFileToolTitle(toolCall: ToolCall) {
   return { action: toolCall.toolName, target: "" };
 }
 
-function buildEditPreview(toolCall: ToolCall) {
+function buildEditPreview(toolCall: ToolCall): string[] {
   if (!isRecord(toolCall.input)) {
     return [];
   }
@@ -416,7 +416,7 @@ function buildEditPreview(toolCall: ToolCall) {
   return preview.slice(0, 4);
 }
 
-function splitEditLines(value: string) {
+function splitEditLines(value: string): string[] {
   if (!value) {
     return [];
   }
@@ -424,7 +424,7 @@ function splitEditLines(value: string) {
   return value.replace(/\r\n/g, "\n").split("\n");
 }
 
-function summarizeEditLineChanges(oldValue: string, newValue: string) {
+function summarizeEditLineChanges(oldValue: string, newValue: string): string {
   const oldLines = splitEditLines(oldValue);
   const newLines = splitEditLines(newValue);
 
@@ -474,7 +474,7 @@ function summarizeEditLineChanges(oldValue: string, newValue: string) {
   return summaryParts.join(", ");
 }
 
-function buildSearchPreview(toolCall: ToolCall) {
+function buildSearchPreview(toolCall: ToolCall): string[] {
   const entries = getSearchCollectionEntries(toolCall.output);
   if (entries.length > 0) {
     return entries.slice(0, 8);
@@ -493,7 +493,7 @@ function buildSearchPreview(toolCall: ToolCall) {
   return [];
 }
 
-function buildFileToolSecondary(toolCall: ToolCall) {
+function buildFileToolSecondary(toolCall: ToolCall): string {
   if (toolCall.toolName === "read_file") {
     return "";
   }
@@ -543,7 +543,7 @@ function buildFileToolSecondary(toolCall: ToolCall) {
   return "";
 }
 
-function buildFileToolPreview(toolCall: ToolCall) {
+function buildFileToolPreview(toolCall: ToolCall): string[] {
   if (toolCall.toolName === "read_file") {
     return [];
   }
@@ -559,7 +559,7 @@ function buildFileToolPreview(toolCall: ToolCall) {
   return [];
 }
 
-function getFileToolPreviewOverflow(toolCall: ToolCall, previewLines: string[]) {
+function getFileToolPreviewOverflow(toolCall: ToolCall, previewLines: string[]): number {
   if (toolCall.toolName === "read_file" && typeof toolCall.output === "string") {
     const total = normalizeTextPaths(toolCall.output).split(/\r?\n/).length;
     return Math.max(total - previewLines.length, 0);
@@ -592,7 +592,7 @@ function getFileToolIcon(toolName: string) {
   return <FileTextOutlined />;
 }
 
-function renderWebOutput(output: unknown) {
+function renderWebOutput(output: unknown): React.ReactNode {
   const parsed = parseMaybeJson(output);
 
   if (

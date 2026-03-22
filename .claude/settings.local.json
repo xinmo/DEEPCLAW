@@ -85,10 +85,27 @@
       "Bash(taskkill /F /FI \"WINDOWTITLE eq python*\")",
       "Bash(netstat -ano)",
       "Bash(findstr :8000)",
-      "Bash(taskkill /F /PID 30028)"
+      "Bash(taskkill /F /PID 30028)",
+      "Bash(python -c \"import langchain_openai; print\\(langchain_openai.__version__\\)\")",
+      "Bash(python -c \"import deepagents; print\\(deepagents.__version__\\)\")",
+      "Bash(python -c \"from langchain_core.messages import HumanMessage; import json; msg = HumanMessage\\(content=''test''\\); print\\(type\\(msg.content\\)\\)\")",
+      "Bash(python -c \"import pkg_resources; print\\(pkg_resources.get_distribution\\(''langchain-openai''\\).version\\)\")",
+      "Bash(python -m pip show langchain-openai)",
+      "Bash(python -m pytest tests/test_claw_chat_stream.py -v -k \"test\" --tb=short)",
+      "Bash(python -c \"print\\(''Backend fix applied successfully. Please restart your backend server.''\\)\")",
+      "Bash(python -c \"from langchain.agents.middleware.todo import WRITE_TODOS_SYSTEM_PROMPT; print\\(''Found in langchain package''\\)\")",
+      "Bash(python -c \"from deepagents import create_deep_agent; import inspect; print\\(inspect.signature\\(create_deep_agent\\)\\)\")",
+      "Bash(python -c \"from src.models.industry_research import IndustryResearch, IndustryNode, IndustryEdge, DeepResearch; print\\(''Models OK''\\)\")",
+      "Bash(python -c \"from src.services.industry_research.deep_researcher import run_deep_research; print\\(''OK''\\)\")",
+      "Bash(node -e \"const g6 = require\\(''''@antv/g6''''\\); console.log\\(Object.keys\\(g6\\).filter\\(k => k.includes\\(''''Behavior''''\\) || k.includes\\(''''behavior''''\\)\\).slice\\(0,20\\)\\)\")",
+      "Bash(pip show:*)",
+      "Read(//e/项目源码/langchain项目源码系列/deepagents-master/libs/deepagents-cli/**)",
+      "Bash(python -c \"from src.schemas.claw import MessageCreate; print\\(''OK''\\)\")",
+      "Bash(python -c \":*)"
     ],
     "additionalDirectories": [
-      "C:\\Users\\WLX\\Desktop\\JAVISAGENT\\javisagent\\backend\\javisagent\\backend\\src\\routes\\nanoclaw"
+      "C:\\Users\\WLX\\Desktop\\JAVISAGENT\\javisagent\\backend\\javisagent\\backend\\src\\routes\\nanoclaw",
+      "C:\\Users\\WLX\\Desktop\\JAVISAGENT\\javisagent\\backend\\tests"
     ]
   }
 }

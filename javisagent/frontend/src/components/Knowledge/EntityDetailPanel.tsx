@@ -1,8 +1,9 @@
-import React from 'react';
-import { Drawer, Descriptions, Tag, List, Typography, Empty, Divider } from 'antd';
-import { ArrowRightOutlined, ArrowLeftOutlined } from '@ant-design/icons';
-import type { GraphEntity } from '../../types/knowledge';
-import { getEntityTypeColor } from '../../types/knowledge';
+import React from "react";
+import { ArrowLeftOutlined, ArrowRightOutlined } from "@ant-design/icons";
+import { Descriptions, Divider, Drawer, Empty, List, Tag, Typography } from "antd";
+
+import type { GraphEntity } from "../../types/knowledge";
+import { getEntityTypeColor } from "../../types/knowledge";
 
 interface EntityDetailPanelProps {
   visible: boolean;
@@ -15,7 +16,7 @@ interface EntityDetailPanelProps {
   onClose: () => void;
 }
 
-const { Text, Paragraph } = Typography;
+const { Paragraph, Text } = Typography;
 
 const EntityDetailPanel: React.FC<EntityDetailPanelProps> = ({
   visible,
@@ -23,24 +24,23 @@ const EntityDetailPanel: React.FC<EntityDetailPanelProps> = ({
   neighbors,
   onClose,
 }) => {
-  if (!entity) return null;
+  if (!entity) {
+    return null;
+  }
 
-  console.log(`[EntityDetailPanel] 显示实体详情 | name=${entity.name} | neighbors=${neighbors.length}`);
-
-  // 按关系方向分组
-  const outgoingRelations = neighbors.filter(n => n.relation.direction === 'out');
-  const incomingRelations = neighbors.filter(n => n.relation.direction === 'in');
+  const outgoingRelations = neighbors.filter((item) => item.relation.direction === "out");
+  const incomingRelations = neighbors.filter((item) => item.relation.direction === "in");
 
   return (
     <Drawer
       title={
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span
             style={{
-              display: 'inline-block',
+              display: "inline-block",
               width: 16,
               height: 16,
-              borderRadius: '50%',
+              borderRadius: "50%",
               background: getEntityTypeColor(entity.type),
             }}
           />
@@ -49,60 +49,58 @@ const EntityDetailPanel: React.FC<EntityDetailPanelProps> = ({
         </div>
       }
       placement="right"
-      width={400}
+      width={420}
       open={visible}
       onClose={onClose}
       mask={false}
     >
-      {/* 基本信息 */}
       <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label="实体ID">
-          <Text copyable style={{ fontSize: 12 }}>{entity.id}</Text>
+        <Descriptions.Item label="Entity ID">
+          <Text copyable style={{ fontSize: 12 }}>
+            {entity.id}
+          </Text>
         </Descriptions.Item>
-        <Descriptions.Item label="类型">
+        <Descriptions.Item label="Type">
           <Tag color={getEntityTypeColor(entity.type)}>{entity.type}</Tag>
         </Descriptions.Item>
-        <Descriptions.Item label="描述">
-          {entity.description || <Text type="secondary">暂无描述</Text>}
+        <Descriptions.Item label="Description">
+          {entity.description || <Text type="secondary">No description available.</Text>}
         </Descriptions.Item>
-        {entity.doc_id && (
-          <Descriptions.Item label="来源文档">
+        {entity.doc_id ? (
+          <Descriptions.Item label="Source document">
             <Text style={{ fontSize: 12 }}>{entity.doc_id}</Text>
           </Descriptions.Item>
-        )}
+        ) : null}
       </Descriptions>
-
-      {/* 关系信息 */}
       {neighbors.length > 0 ? (
         <>
-          {/* 出边关系 */}
-          {outgoingRelations.length > 0 && (
+          {outgoingRelations.length > 0 ? (
             <>
               <Divider orientationMargin={0} style={{ fontSize: 13 }}>
-                <ArrowRightOutlined /> 指向的实体 ({outgoingRelations.length})
+                <ArrowRightOutlined /> Outgoing links ({outgoingRelations.length})
               </Divider>
               <List
                 size="small"
                 dataSource={outgoingRelations}
-                renderItem={item => (
+                renderItem={(item) => (
                   <List.Item>
-                    <div style={{ width: '100%' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ width: "100%" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <Tag color="blue">{item.relation.type}</Tag>
-                        <ArrowRightOutlined style={{ color: '#999' }} />
+                        <ArrowRightOutlined style={{ color: "#999" }} />
                         <span
                           style={{
-                            display: 'inline-block',
+                            display: "inline-block",
                             width: 10,
                             height: 10,
-                            borderRadius: '50%',
+                            borderRadius: "50%",
                             background: getEntityTypeColor(item.entity.type),
                           }}
                         />
                         <Text strong>{item.entity.name}</Text>
                         <Tag style={{ fontSize: 10 }}>{item.entity.type}</Tag>
                       </div>
-                      {item.relation.description && (
+                      {item.relation.description ? (
                         <Paragraph
                           type="secondary"
                           style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}
@@ -110,42 +108,40 @@ const EntityDetailPanel: React.FC<EntityDetailPanelProps> = ({
                         >
                           {item.relation.description}
                         </Paragraph>
-                      )}
+                      ) : null}
                     </div>
                   </List.Item>
                 )}
               />
             </>
-          )}
-
-          {/* 入边关系 */}
-          {incomingRelations.length > 0 && (
+          ) : null}
+          {incomingRelations.length > 0 ? (
             <>
               <Divider orientationMargin={0} style={{ fontSize: 13 }}>
-                <ArrowLeftOutlined /> 指向该实体 ({incomingRelations.length})
+                <ArrowLeftOutlined /> Incoming links ({incomingRelations.length})
               </Divider>
               <List
                 size="small"
                 dataSource={incomingRelations}
-                renderItem={item => (
+                renderItem={(item) => (
                   <List.Item>
-                    <div style={{ width: '100%' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ width: "100%" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span
                           style={{
-                            display: 'inline-block',
+                            display: "inline-block",
                             width: 10,
                             height: 10,
-                            borderRadius: '50%',
+                            borderRadius: "50%",
                             background: getEntityTypeColor(item.entity.type),
                           }}
                         />
                         <Text strong>{item.entity.name}</Text>
                         <Tag style={{ fontSize: 10 }}>{item.entity.type}</Tag>
-                        <ArrowRightOutlined style={{ color: '#999' }} />
+                        <ArrowRightOutlined style={{ color: "#999" }} />
                         <Tag color="green">{item.relation.type}</Tag>
                       </div>
-                      {item.relation.description && (
+                      {item.relation.description ? (
                         <Paragraph
                           type="secondary"
                           style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}
@@ -153,16 +149,16 @@ const EntityDetailPanel: React.FC<EntityDetailPanelProps> = ({
                         >
                           {item.relation.description}
                         </Paragraph>
-                      )}
+                      ) : null}
                     </div>
                   </List.Item>
                 )}
               />
             </>
-          )}
+          ) : null}
         </>
       ) : (
-        <Empty description="暂无关联实体" style={{ marginTop: 40 }} />
+        <Empty description="No linked entities found." style={{ marginTop: 40 }} />
       )}
     </Drawer>
   );

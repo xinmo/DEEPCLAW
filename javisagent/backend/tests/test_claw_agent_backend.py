@@ -117,11 +117,21 @@ fake_deepagents_cli_local_context.LocalContextMiddleware = type(
 )
 sys.modules["deepagents_cli.local_context"] = fake_deepagents_cli_local_context
 
+fake_prompt_debug = types.ModuleType("src.services.claw.prompt_debug")
+fake_prompt_debug.ClawPromptDebugCaptureMiddleware = type(
+    "ClawPromptDebugCaptureMiddleware",
+    (),
+    {"__init__": lambda self, callback: setattr(self, "callback", callback)},
+)
+sys.modules["src.services.claw.prompt_debug"] = fake_prompt_debug
+
 existing_claw_package = sys.modules.get("src.services.claw")
 if existing_claw_package is not None and not getattr(existing_claw_package, "__file__", None):
     sys.modules.pop("src.services.claw", None)
     sys.modules.pop("src.services.claw.agent", None)
     sys.modules.pop("src.services.claw.local_context", None)
+    sys.modules.pop("src.services.claw.skill_registry", None)
+    sys.modules.pop("src.services.claw.tools", None)
 
 claw_agent_module = importlib.import_module("src.services.claw.agent")
 
@@ -159,8 +169,12 @@ def test_create_claw_agent_uses_global_composite_backend(monkeypatch):
             self.backend = backend
             self.system_prompt = system_prompt
 
-    def fake_chat_openai(**kwargs):
-        captured["llm_kwargs"] = kwargs
+    def fake_create_llm(llm_model, model_config, api_key):
+        captured["llm_kwargs"] = {
+            "llm_model": llm_model,
+            "model_config": model_config,
+            "api_key": api_key,
+        }
         return DummyLLM()
 
     def fake_create_summarization_tool_middleware(model, backend, *, system_prompt=None):
@@ -179,7 +193,7 @@ def test_create_claw_agent_uses_global_composite_backend(monkeypatch):
         captured["agent_kwargs"] = kwargs
         return "fake-agent"
 
-    monkeypatch.setattr(claw_agent_module, "ChatOpenAI", fake_chat_openai)
+    monkeypatch.setattr(claw_agent_module, "_create_llm", fake_create_llm)
     monkeypatch.setattr(
         claw_agent_module,
         "ClawLocalContextMiddleware",

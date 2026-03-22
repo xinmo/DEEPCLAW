@@ -1,4 +1,8 @@
 import React, { useCallback, useEffect, useReducer, useRef } from "react";
+import ResearchHome from "../components/IndustryResearch/ResearchHome";
+import ResearchDashboard from "../components/IndustryResearch/ResearchDashboard";
+import IndustryGraph from "../components/IndustryResearch/IndustryGraph";
+import DeepResearch from "../components/IndustryResearch/DeepResearch";
 import type {
   AgentStatus,
   DeepResearchData,
@@ -278,43 +282,45 @@ const IndustryResearchPage: React.FC = () => {
 
   const { view } = state;
 
-  // Expose handlers via data attributes for future sub-components (unused vars suppressed)
-  void handleDeepResearch;
-  void handleReviewHistory;
-
   return (
     <div style={{ height: "100%", overflow: "hidden" }}>
-      {/* TODO Task 6: ResearchHome */}
       {view === "home" && (
-        <div style={{ padding: 32 }}>
-          <h2>产业研究室首页（Task 6 实现）</h2>
-          <p>query: <input onChange={() => {}} /></p>
-          <button onClick={() => handleStartResearch("半导体", "standard")}>测试研究</button>
-        </div>
+        <ResearchHome
+          history={state.history}
+          loading={state.loading}
+          onStart={handleStartResearch}
+          onReview={handleReviewHistory}
+        />
       )}
-      {/* TODO Task 7: ResearchDashboard */}
       {view === "dashboard" && (
-        <div style={{ padding: 32 }}>
-          <h2>研究看板（Task 7 实现）</h2>
-          <p>进度: {state.progress}%</p>
-          <p>节点数: {state.graphNodes.length}</p>
-        </div>
+        <ResearchDashboard
+          agents={state.agents}
+          logs={state.logs}
+          graphNodes={state.graphNodes}
+          graphEdges={state.graphEdges}
+          progress={state.progress}
+          query={state.query}
+        />
       )}
-      {/* TODO Task 8: IndustryGraph */}
       {view === "graph" && (
-        <div style={{ padding: 32 }}>
-          <h2>产业链图谱（Task 8 实现）</h2>
-          <p>节点数: {state.graphNodes.length}</p>
-          <button onClick={() => dispatch({ type: "SET_VIEW", view: "home" })}>返回</button>
-        </div>
+        <IndustryGraph
+          query={state.query}
+          nodes={state.graphNodes}
+          edges={state.graphEdges}
+          selectedNodeId={state.selectedNodeId}
+          onNodeSelect={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
+          onDeepResearch={handleDeepResearch}
+          onBack={() => dispatch({ type: "SET_VIEW", view: "home" })}
+        />
       )}
-      {/* TODO Task 9: DeepResearch */}
       {view === "deep" && (
-        <div style={{ padding: 32 }}>
-          <h2>深度研究（Task 9 实现）</h2>
-          <p>报告长度: {state.deepReport.length}</p>
-          <button onClick={() => dispatch({ type: "SET_VIEW", view: "graph" })}>返回图谱</button>
-        </div>
+        <DeepResearch
+          nodeName={state.selectedNodeId ?? ""}
+          report={state.deepReport}
+          deepData={state.deepData}
+          progress={state.deepProgress}
+          onBack={() => dispatch({ type: "SET_VIEW", view: "graph" })}
+        />
       )}
     </div>
   );

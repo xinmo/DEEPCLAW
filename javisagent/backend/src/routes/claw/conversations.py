@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from src.models import get_db
+from src.models.channels import ChannelSession
 from src.models.claw import ClawConversation, ClawConversationPromptSnapshot
 from src.schemas.claw import (
     ConversationCreate,
@@ -113,6 +114,9 @@ async def delete_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="对话不存在")
 
+    db.query(ChannelSession).filter_by(conversation_id=str(conv_id)).delete(
+        synchronize_session=False
+    )
     db.delete(conversation)
     db.commit()
     return {"message": "删除成功"}

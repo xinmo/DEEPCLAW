@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Card, Descriptions, Spin } from 'antd';
 import { FileText, Image, Link } from 'lucide-react';
-import { renderAsync } from 'docx-preview';
+
 import api from '../../services/api';
 
 interface FilePreviewProps {
@@ -12,141 +12,216 @@ interface FilePreviewProps {
   isUrlTask?: boolean;
 }
 
+const cardStyle = {
+  borderRadius: 8,
+  height: 'calc(100vh - 180px)',
+};
+
+const centerBoxStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+  alignItems: 'center',
+  height: 'calc(100vh - 300px)',
+  borderRadius: 8,
+};
+
+const previewAreaStyle: React.CSSProperties = {
+  flex: 1,
+  overflow: 'auto',
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'flex-start',
+};
+
+const textPreviewStyle: React.CSSProperties = {
+  maxHeight: 'calc(100vh - 350px)',
+  overflow: 'auto',
+  backgroundColor: '#f5f5f5',
+  padding: 16,
+  borderRadius: 8,
+  fontSize: 13,
+  lineHeight: 1.6,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  margin: 0,
+  width: '100%',
+};
+
+const docxContainerStyle: React.CSSProperties = {
+  backgroundColor: '#fff',
+  padding: 16,
+};
+
+function getExtension(name: string): string {
+  return name.split('.').pop()?.toLowerCase() || '';
+}
+
+function getFileIcon(fileName: string) {
+  const ext = getExtension(fileName);
+  switch (ext) {
+    case 'pdf':
+      return <FileText size={24} style={{ color: '#ff4d4f' }} />;
+    case 'doc':
+    case 'docx':
+      return <FileText size={24} style={{ color: '#1890ff' }} />;
+    case 'jpg':
+    case 'jpeg':
+    case 'png':
+    case 'gif':
+    case 'webp':
+    case 'bmp':
+      return <Image size={24} style={{ color: '#52c41a' }} />;
+    default:
+      return <FileText size={24} style={{ color: '#8c8c8c' }} />;
+  }
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes === 0) {
+    return '0 Bytes';
+  }
+  const units = ['Bytes', 'KB', 'MB', 'GB'];
+  const index = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${parseFloat((bytes / 1024 ** index).toFixed(2))} ${units[index]}`;
+}
+
 const FilePreview: React.FC<FilePreviewProps> = ({ file, loading, fileId, fileName, isUrlTask }) => {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
-  const [docxLoading, setDocxLoading] = useState<boolean>(false);
-  const [docxRendered, setDocxRendered] = useState<boolean>(false);
-  const [remoteFileLoading, setRemoteFileLoading] = useState<boolean>(false);
+  const [docxLoading, setDocxLoading] = useState(false);
+  const [docxRendered, setDocxRendered] = useState(false);
+  const [remoteFileLoading, setRemoteFileLoading] = useState(false);
   const [remoteFile, setRemoteFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const docxContainerRef = useRef<HTMLDivElement>(null);
 
-  /**
-   * 从远程加载文件
-   */
   useEffect(() => {
-    if (fileId && !file) {
-      setRemoteFileLoading(true);
-      setError(null);
-      
-      api.getFile(fileId)
-        .then(blob => {
-          const remoteFileName = fileName || `file_${fileId}`;
-          const remoteFileObj = new File([blob], remoteFileName, { type: blob.type });
-          setRemoteFile(remoteFileObj);
-        })
-        .catch(err => {
-          console.error('加载远程文件失败:', err);
-          setError('文件加载失败，可能已被删除');
-        })
-        .finally(() => {
-          setRemoteFileLoading(false);
-        });
-    } else {
+    if (!fileId || file) {
       setRemoteFile(null);
       setError(null);
+      return;
     }
-  }, [fileId, fileName, file]);
 
-  // 合并本地文件和远程文件
+    let cancelled = false;
+    setRemoteFileLoading(true);
+    setError(null);
+
+    void api
+      .getFile(fileId)
+      .then((blob) => {
+        if (cancelled) {
+          return;
+        }
+        const nextFileName = fileName || `file_${fileId}`;
+        setRemoteFile(new File([blob], nextFileName, { type: blob.type }));
+      })
+      .catch((fetchError) => {
+        console.error('Failed to load remote file preview.', fetchError);
+        if (!cancelled) {
+          setError('文件加载失败，请稍后重试。');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRemoteFileLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file, fileId, fileName]);
+
   const currentFile = file || remoteFile;
 
-  // 处理文件 URL 和文本内容
   useEffect(() => {
-    if (currentFile) {
-      const url = URL.createObjectURL(currentFile);
-      setPreviewUrl(url);
-      setDocxRendered(false);
-
-      const ext = currentFile.name.split('.').pop()?.toLowerCase();
-
-      // 处理文本文件
-      if (ext === 'txt' || ext === 'md' || ext === 'json' || ext === 'html') {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          setTextContent(e.target?.result as string);
-        };
-        reader.readAsText(currentFile);
-      } else {
-        setTextContent(null);
-      }
-
-      return () => {
-        URL.revokeObjectURL(url);
-      };
-    } else {
+    if (!currentFile) {
       setPreviewUrl(null);
       setTextContent(null);
       setDocxRendered(false);
+      return;
     }
+
+    const url = URL.createObjectURL(currentFile);
+    setPreviewUrl(url);
+    setDocxRendered(false);
+
+    const ext = getExtension(currentFile.name);
+    if (['txt', 'md', 'json', 'html'].includes(ext)) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setTextContent((event.target?.result as string) || '');
+      };
+      reader.readAsText(currentFile);
+    } else {
+      setTextContent(null);
+    }
+
+    return () => {
+      URL.revokeObjectURL(url);
+    };
   }, [currentFile]);
 
-  // 单独处理 Word 文档渲染（需要等待 ref 挂载）
   useEffect(() => {
-    if (!currentFile || docxRendered) return;
+    if (!currentFile || docxRendered || getExtension(currentFile.name) !== 'docx') {
+      return;
+    }
 
-    const ext = currentFile.name.split('.').pop()?.toLowerCase();
-    if (ext !== 'docx') return;
-
-    // 使用 setTimeout 确保 DOM 已渲染
-    const timer = setTimeout(() => {
-      if (!docxContainerRef.current) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!docxContainerRef.current) {
+        return;
+      }
 
       setDocxLoading(true);
-      docxContainerRef.current.innerHTML = ''; // 清空之前的内容
+      docxContainerRef.current.innerHTML = '';
 
-      renderAsync(currentFile, docxContainerRef.current, undefined, {
-        className: 'docx-preview',
-        inWrapper: true,
-        ignoreWidth: false,
-        ignoreHeight: false,
-        ignoreFonts: false,
-        breakPages: true,
-        useBase64URL: true,
-      }).then(() => {
-        setDocxLoading(false);
-        setDocxRendered(true);
-      }).catch((err) => {
-        console.error('Word 文档预览失败:', err);
-        setDocxLoading(false);
-      });
+      void (async () => {
+        try {
+          const { renderAsync } = await import('docx-preview');
+          if (cancelled || !docxContainerRef.current) {
+            return;
+          }
+          await renderAsync(currentFile, docxContainerRef.current, undefined, {
+            className: 'docx-preview',
+            inWrapper: true,
+            ignoreWidth: false,
+            ignoreHeight: false,
+            ignoreFonts: false,
+            breakPages: true,
+            useBase64URL: true,
+          });
+          if (!cancelled) {
+            setDocxRendered(true);
+          }
+        } catch (renderError) {
+          console.error('Failed to render DOCX preview.', renderError);
+          if (!cancelled) {
+            setError('DOCX 预览加载失败。');
+          }
+        } finally {
+          if (!cancelled) {
+            setDocxLoading(false);
+          }
+        }
+      })();
     }, 100);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [currentFile, docxRendered]);
 
-  const getFileIcon = (fileName: string) => {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    switch (ext) {
-      case 'pdf':
-        return <FileText size={24} style={{ color: '#ff4d4f' }} />;
-      case 'doc':
-      case 'docx':
-        return <FileText size={24} style={{ color: '#1890ff' }} />;
-      case 'jpg':
-      case 'jpeg':
-      case 'png':
-      case 'gif':
-        return <Image size={24} style={{ color: '#52c41a' }} />;
-      default:
-        return <FileText size={24} style={{ color: '#8c8c8c' }} />;
-    }
-  };
-
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
   const renderPreview = () => {
-    if (!currentFile || !previewUrl) return null;
-    const ext = currentFile.name.split('.').pop()?.toLowerCase();
+    if (!currentFile || !previewUrl) {
+      return null;
+    }
 
-    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext || '')) {
+    const ext = getExtension(currentFile.name);
+
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) {
       return (
         <img
           src={previewUrl}
@@ -166,98 +241,63 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, loading, fileId, fileNa
       );
     }
 
-    // Word 文档预览
     if (ext === 'docx') {
       return (
         <div style={{ width: '100%', height: 'calc(100vh - 350px)', overflow: 'auto' }}>
-          {docxLoading && (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-              <Spin size="large" />
+          {docxLoading ? (
+            <div style={{ ...centerBoxStyle, height: '100%' }}>
+              <Spin size="large" tip="正在加载 DOCX 预览..." />
             </div>
-          )}
+          ) : null}
           <div
             ref={docxContainerRef}
             style={{
+              ...docxContainerStyle,
               display: docxLoading ? 'none' : 'block',
-              backgroundColor: '#fff',
-              padding: 16
             }}
           />
         </div>
       );
     }
 
-    // .doc 格式提示
     if (ext === 'doc') {
       return (
-        <div style={{ textAlign: 'center', padding: 40 }}>
+        <div style={{ ...centerBoxStyle, backgroundColor: '#fafafa' }}>
           {getFileIcon(currentFile.name)}
           <div style={{ marginTop: 16, color: '#666' }}>
-            .doc 格式暂不支持预览，请转换为 .docx 格式
+            `.doc` 暂不支持在线预览，请转换为 `.docx` 后再查看。
           </div>
         </div>
       );
     }
 
     if (textContent !== null) {
-      return (
-        <pre style={{
-          maxHeight: 'calc(100vh - 350px)',
-          overflow: 'auto',
-          backgroundColor: '#f5f5f5',
-          padding: 16,
-          borderRadius: 8,
-          fontSize: 13,
-          lineHeight: 1.6,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          margin: 0,
-          width: '100%'
-        }}>
-          {textContent}
-        </pre>
-      );
+      return <pre style={textPreviewStyle}>{textContent}</pre>;
     }
 
     return (
-      <div style={{ textAlign: 'center', padding: 40 }}>
+      <div style={{ ...centerBoxStyle, backgroundColor: '#fafafa' }}>
         {getFileIcon(currentFile.name)}
-        <div style={{ marginTop: 16, color: '#666' }}>该文件类型暂不支持预览</div>
+        <div style={{ marginTop: 16, color: '#666' }}>当前文件类型暂不支持预览。</div>
       </div>
     );
   };
 
-  // URL 解析任务无文件预览
   if (isUrlTask) {
     return (
-      <Card title="文件预览" style={{ borderRadius: 8, height: 'calc(100vh - 180px)' }}>
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: 'calc(100vh - 300px)',
-          backgroundColor: '#fafafa',
-          borderRadius: 8
-        }}>
+      <Card title="文件预览" style={cardStyle}>
+        <div style={{ ...centerBoxStyle, backgroundColor: '#fafafa' }}>
           <Link size={64} style={{ color: '#1890ff' }} />
-          <div style={{ marginTop: 16, color: '#666' }}>该任务为 URL 解析，无文件预览</div>
+          <div style={{ marginTop: 16, color: '#666' }}>当前任务为 URL 解析，没有本地文件预览。</div>
         </div>
       </Card>
     );
   }
 
-  // 远程文件加载中
   if (remoteFileLoading) {
     return (
-      <Card title="文件预览" style={{ borderRadius: 8, height: 'calc(100vh - 180px)' }}>
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: 'calc(100vh - 300px)',
-        }}>
+      <Card title="文件预览" style={cardStyle}>
+        <div style={centerBoxStyle}>
           <Spin size="large" />
           <div style={{ marginTop: 16, color: '#999' }}>正在加载文件...</div>
         </div>
@@ -265,19 +305,10 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, loading, fileId, fileNa
     );
   }
 
-  // 文件加载失败
   if (error) {
     return (
-      <Card title="文件预览" style={{ borderRadius: 8, height: 'calc(100vh - 180px)' }}>
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: 'calc(100vh - 300px)',
-          backgroundColor: '#fff2f0',
-          borderRadius: 8
-        }}>
+      <Card title="文件预览" style={cardStyle}>
+        <div style={{ ...centerBoxStyle, backgroundColor: '#fff2f0' }}>
           <FileText size={64} style={{ color: '#ff4d4f' }} />
           <div style={{ marginTop: 16, color: '#ff4d4f' }}>{error}</div>
         </div>
@@ -287,18 +318,10 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, loading, fileId, fileNa
 
   if (!currentFile) {
     return (
-      <Card title="文件预览" style={{ borderRadius: 8, height: 'calc(100vh - 180px)' }}>
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: 'calc(100vh - 300px)',
-          backgroundColor: '#fafafa',
-          borderRadius: 8
-        }}>
+      <Card title="文件预览" style={cardStyle}>
+        <div style={{ ...centerBoxStyle, backgroundColor: '#fafafa' }}>
           <FileText size={64} style={{ color: '#d9d9d9' }} />
-          <div style={{ marginTop: 16, color: '#999' }}>请上传文件以查看预览</div>
+          <div style={{ marginTop: 16, color: '#999' }}>请上传文件后查看预览。</div>
         </div>
       </Card>
     );
@@ -307,7 +330,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, loading, fileId, fileNa
   return (
     <Card
       title="文件预览"
-      style={{ borderRadius: 8, height: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column' }}
+      style={{ ...cardStyle, display: 'flex', flexDirection: 'column' }}
       extra={getFileIcon(currentFile.name)}
       styles={{ body: { flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' } }}
     >
@@ -315,9 +338,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({ file, loading, fileId, fileNa
         <Descriptions.Item label="文件名">{currentFile.name}</Descriptions.Item>
         <Descriptions.Item label="大小">{formatFileSize(currentFile.size)}</Descriptions.Item>
       </Descriptions>
-      <div style={{ flex: 1, overflow: 'auto', display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
-        {loading ? <Spin size="large" /> : renderPreview()}
-      </div>
+      <div style={previewAreaStyle}>{loading ? <Spin size="large" /> : renderPreview()}</div>
     </Card>
   );
 };

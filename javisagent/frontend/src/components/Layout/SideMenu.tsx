@@ -31,6 +31,8 @@ const LABELS = {
   promptManagement: "Prompt \u7ba1\u7406",
   skillManagement: "\u6280\u80fd\u7ba1\u7406",
   channelAccess: "\u6e20\u9053\u63a5\u5165",
+  mcpManagement: "MCP \u7ba1\u7406",
+  aiResearch: "AI\u7814\u7a76\u9662",
   industryResearch: "\u4ea7\u4e1a\u7814\u7a76\u5ba4",
   settings: "\u8bbe\u7f6e",
   accountSettings: "\u8d26\u6237\u8bbe\u7f6e",
@@ -75,7 +77,7 @@ const SideMenu: React.FC<SideMenuProps> = ({
       <Menu
         mode="inline"
         selectedKeys={[selectedKey]}
-        defaultOpenKeys={["smart-parse", "smart-translate", "smart-knowledge", "claw"]}
+        defaultOpenKeys={["smart-parse", "smart-translate", "smart-knowledge", "claw", "ai-research"]}
         style={{ height: "calc(100% - 64px)", borderRight: 0 }}
         onClick={({ key }) => onMenuSelect?.(key)}
         items={[
@@ -145,12 +147,24 @@ const SideMenu: React.FC<SideMenuProps> = ({
                 label: collapsed ? "" : LABELS.channelAccess,
                 icon: <Plug size={16} />,
               },
+              {
+                key: "mcp-management",
+                label: collapsed ? "" : LABELS.mcpManagement,
+                icon: <Plug size={16} />,
+              },
             ],
           },
           {
-            key: "industry-research",
-            label: collapsed ? "" : LABELS.industryResearch,
+            key: "ai-research",
+            label: collapsed ? "" : LABELS.aiResearch,
             icon: <FlaskConical size={16} />,
+            children: [
+              {
+                key: "industry-research",
+                label: collapsed ? "" : LABELS.industryResearch,
+                icon: <FlaskConical size={16} />,
+              },
+            ],
           },
           {
             key: "settings",

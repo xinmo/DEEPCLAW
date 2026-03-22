@@ -15,9 +15,11 @@ import {
 
 import { channelApi } from "../services/channelApi";
 import type {
+  ChannelLogEntry,
   ChannelSummary,
   QQChannelConfigPayload,
   QQChannelDetail,
+  QQChannelTestResult,
 } from "../types/channel";
 
 const { useBreakpoint } = Grid;
@@ -37,12 +39,37 @@ const STATUS_COLOR_MAP: Record<string, string> = {
   unavailable: "orange",
 };
 
+const TEST_ALERT_TYPE_MAP: Record<string, "success" | "warning" | "error" | "info"> = {
+  success: "success",
+  warning: "warning",
+  error: "error",
+};
+
+const LOG_LEVEL_COLOR_MAP: Record<string, string> = {
+  INFO: "blue",
+  WARNING: "orange",
+  ERROR: "red",
+  DEBUG: "default",
+};
+
 function normalizeAllowList(rawValue: string): string[] {
   return rawValue
     .replace(/,/g, "\n")
     .split("\n")
     .map((item) => item.trim())
     .filter((item, index, items) => item.length > 0 && items.indexOf(item) === index);
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) {
+    return "--";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 }
 
 const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) => {
@@ -58,9 +85,18 @@ const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) =>
     allow_from: [],
   });
   const [allowListText, setAllowListText] = useState("");
+  const [logs, setLogs] = useState<ChannelLogEntry[]>([]);
+  const [testResult, setTestResult] = useState<QQChannelTestResult | null>(null);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [loadingLogs, setLoadingLogs] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  const buildPayload = (): QQChannelConfigPayload => ({
+    ...formState,
+    allow_from: normalizeAllowList(allowListText),
+  });
 
   const loadChannels = async () => {
     try {
@@ -90,6 +126,19 @@ const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) =>
       console.error(error);
     } finally {
       setLoadingDetail(false);
+    }
+  };
+
+  const loadQQLogs = async () => {
+    try {
+      setLoadingLogs(true);
+      const result = await channelApi.getQQChannelLogs(200);
+      setLogs(result.entries);
+    } catch (error) {
+      message.error("加载 QQ 运行日志失败");
+      console.error(error);
+    } finally {
+      setLoadingLogs(false);
     }
   };
 
@@ -126,15 +175,21 @@ const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) =>
     const initialize = async () => {
       try {
         setLoadingDetail(true);
-        const detail = await channelApi.getQQChannel();
+        setLoadingLogs(true);
+        const [detail, logResult] = await Promise.all([
+          channelApi.getQQChannel(),
+          channelApi.getQQChannelLogs(200),
+        ]);
         setQqDetail(detail);
         setFormState(detail.config);
         setAllowListText(detail.config.allow_from.join("\n"));
+        setLogs(logResult.entries);
       } catch (error) {
-        message.error("加载 QQ 渠道配置失败");
+        message.error("加载 QQ 渠道信息失败");
         console.error(error);
       } finally {
         setLoadingDetail(false);
+        setLoadingLogs(false);
       }
     };
 
@@ -144,21 +199,44 @@ const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) =>
   const handleSave = async () => {
     try {
       setSaving(true);
-      const nextPayload: QQChannelConfigPayload = {
-        ...formState,
-        allow_from: normalizeAllowList(allowListText),
-      };
-      const detail = await channelApi.updateQQChannel(nextPayload);
+      const detail = await channelApi.updateQQChannel(buildPayload());
       setQqDetail(detail);
       setFormState(detail.config);
       setAllowListText(detail.config.allow_from.join("\n"));
       message.success("QQ 渠道配置已保存");
-      await loadChannels();
+      await Promise.all([loadChannels(), loadQQLogs()]);
     } catch (error) {
       message.error("保存 QQ 渠道配置失败");
       console.error(error);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    try {
+      setTesting(true);
+      const result = await channelApi.testQQChannel(buildPayload());
+      setTestResult(result);
+      setQqDetail((current) =>
+        current
+          ? {
+              ...current,
+              runtime: result.runtime,
+            }
+          : current,
+      );
+      if (result.success) {
+        message.success("QQ 连接测试通过");
+      } else {
+        message.warning(result.message);
+      }
+      await loadQQLogs();
+    } catch (error) {
+      message.error("执行 QQ 连接测试失败");
+      console.error(error);
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -286,6 +364,7 @@ const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) =>
                   <Tag color={runtime.running ? "green" : "default"}>
                     {runtime.running ? "运行中" : "未运行"}
                   </Tag>
+                  <Tag>{`更新时间：${formatDateTime(runtime.updated_at)}`}</Tag>
                 </Space>
               </Space>
             </Card>
@@ -314,6 +393,42 @@ const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) =>
               }
             />
           ) : null}
+
+          <Card
+            size="small"
+            title="连接测试"
+            extra={
+              <Button type="primary" onClick={() => void handleTestConnection()} loading={testing}>
+                测试连接
+              </Button>
+            }
+          >
+            <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+              测试连接使用当前表单参数，不会覆盖已保存配置。如果正式 QQ 渠道正在运行，为避免打断正式实例，系统只会做基础诊断。
+            </Paragraph>
+            {testResult ? (
+              <Alert
+                type={TEST_ALERT_TYPE_MAP[testResult.state] || "info"}
+                showIcon
+                message={testResult.message}
+                description={
+                  <div>
+                    <div style={{ marginBottom: 8 }}>{`测试时间：${formatDateTime(testResult.tested_at)}`}</div>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {testResult.checks.map((item) => (
+                        <li key={item.key}>
+                          <strong>{item.label}</strong>
+                          {`：${item.message}`}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                }
+              />
+            ) : (
+              <Text type="secondary">尚未执行连接测试。</Text>
+            )}
+          </Card>
 
           <div>
             <Text strong>启用渠道</Text>
@@ -387,9 +502,60 @@ const ChannelsPage: React.FC<ChannelsPageProps> = ({ initialChannel = "qq" }) =>
               保存配置
             </Button>
             <Button onClick={() => void loadQQDetail()} loading={loadingDetail}>
-              重新加载
+              重新加载配置
             </Button>
           </Space>
+
+          <Card
+            size="small"
+            title="运行日志"
+            extra={
+              <Button onClick={() => void loadQQLogs()} loading={loadingLogs}>
+                刷新日志
+              </Button>
+            }
+          >
+            <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+              展示最近 200 条 QQ 渠道运行日志和连接测试日志。
+            </Paragraph>
+            <div
+              style={{
+                maxHeight: 360,
+                overflow: "auto",
+                padding: 12,
+                borderRadius: 10,
+                background: "#0f172a",
+                border: "1px solid #1e293b",
+              }}
+            >
+              {logs.length === 0 ? (
+                <Text style={{ color: "#94a3b8" }}>暂无日志</Text>
+              ) : (
+                <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                  {logs.map((entry, index) => (
+                    <div
+                      key={`${entry.timestamp}-${entry.source}-${index}`}
+                      style={{
+                        fontFamily: "Consolas, Monaco, monospace",
+                        fontSize: 12,
+                        color: "#e2e8f0",
+                        lineHeight: 1.6,
+                        borderBottom: index === logs.length - 1 ? "none" : "1px solid #1e293b",
+                        paddingBottom: 8,
+                      }}
+                    >
+                      <Space wrap size={[8, 8]}>
+                        <Tag color={LOG_LEVEL_COLOR_MAP[entry.level] || "default"}>{entry.level}</Tag>
+                        <Text style={{ color: "#94a3b8" }}>{formatDateTime(entry.timestamp)}</Text>
+                        <Text style={{ color: "#cbd5e1" }}>{entry.source}</Text>
+                      </Space>
+                      <div style={{ marginTop: 4 }}>{entry.message}</div>
+                    </div>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </Card>
         </Space>
       </div>
     </div>

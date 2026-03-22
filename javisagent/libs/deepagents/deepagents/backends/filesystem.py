@@ -494,14 +494,17 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 check=False,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return None
 
+        stdout = proc.stdout or ""
         results: dict[str, list[tuple[int, str]]] = {}
-        for line in proc.stdout.splitlines():
+        for line in stdout.splitlines():
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:

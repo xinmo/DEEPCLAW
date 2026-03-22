@@ -1,15 +1,13 @@
 """Deep Agents come with planning, filesystem, and subagents."""
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
 from langchain.chat_models import init_chat_model
-from langchain_anthropic import ChatAnthropic
-from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
@@ -34,16 +32,37 @@ from deepagents.middleware.subagents import (
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.prompt_defaults import BASE_AGENT_PROMPT
 
+if TYPE_CHECKING:
+    from langchain_anthropic import ChatAnthropic
 
-def get_default_model() -> ChatAnthropic:
+
+def get_default_model() -> BaseChatModel:
     """Get the default model for deep agents.
 
     Returns:
         `ChatAnthropic` instance configured with Claude Sonnet 4.6.
     """
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError as exc:
+        msg = (
+            "langchain-anthropic is required to use the default DeepAgents model. "
+            "Install it or pass an explicit model instance/string."
+        )
+        raise ImportError(msg) from exc
+
     return ChatAnthropic(
         model_name="claude-sonnet-4-6",
     )
+
+
+def _create_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
+    try:
+        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+    except ImportError:
+        return None
+
+    return AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -231,9 +250,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         build_todo_middleware(),
         build_filesystem_middleware(),
         build_summarization_middleware(model),
-        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
     ]
+    prompt_caching_middleware = _create_prompt_caching_middleware()
+    if prompt_caching_middleware is not None:
+        gp_middleware.insert(-1, prompt_caching_middleware)
     if skills is not None:
         gp_middleware.append(
             SkillsMiddleware(
@@ -269,9 +290,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 build_todo_middleware(),
                 build_filesystem_middleware(),
                 build_summarization_middleware(subagent_model),
-                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
             ]
+            prompt_caching_middleware = _create_prompt_caching_middleware()
+            if prompt_caching_middleware is not None:
+                subagent_middleware.insert(-1, prompt_caching_middleware)
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(
@@ -331,10 +354,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             build_filesystem_middleware(),
             subagent_middleware,
             build_summarization_middleware(model),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
         ]
     )
+    prompt_caching_middleware = _create_prompt_caching_middleware()
+    if prompt_caching_middleware is not None:
+        deepagent_middleware.insert(-1, prompt_caching_middleware)
 
     if middleware:
         deepagent_middleware.extend(middleware)

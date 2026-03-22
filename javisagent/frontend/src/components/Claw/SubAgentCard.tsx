@@ -7,7 +7,8 @@ import {
   RobotOutlined,
 } from "@ant-design/icons";
 
-import type { ProcessStatus } from "../../types/claw";
+import type { ProcessStatus, ToolCall } from "../../types/claw";
+import ToolCallCard from "./ToolCallCard";
 
 const { Text, Paragraph } = Typography;
 
@@ -17,6 +18,19 @@ interface SubAgentCardProps {
   toolId?: string;
   transcript?: string;
   result?: string;
+  childTools?: ToolCall[];
+}
+
+function getChildToolSummary(tools: ToolCall[]) {
+  const runningCount = tools.filter((tool) => tool.status === "running").length;
+  const successCount = tools.filter((tool) => tool.status === "success").length;
+  const failedCount = tools.filter((tool) => tool.status === "failed").length;
+  return {
+    total: tools.length,
+    runningCount,
+    successCount,
+    failedCount,
+  };
 }
 
 const SubAgentCard: React.FC<SubAgentCardProps> = ({
@@ -25,7 +39,12 @@ const SubAgentCard: React.FC<SubAgentCardProps> = ({
   toolId,
   transcript,
   result,
+  childTools,
 }) => {
+  const nestedTools = Array.isArray(childTools) ? childTools : [];
+  const hasDetails = Boolean(transcript || result);
+  const childToolSummary = getChildToolSummary(nestedTools);
+
   const icon =
     status === "running" ? (
       <LoadingOutlined style={{ color: "#722ed1" }} />
@@ -61,41 +80,77 @@ const SubAgentCard: React.FC<SubAgentCardProps> = ({
         {icon}
         <Text strong>{title}</Text>
         <Tag color={tagColor}>{status}</Tag>
-        {toolId && (
+        {toolId ? (
           <Text type="secondary" style={{ fontSize: 12 }}>
             {toolId}
           </Text>
-        )}
+        ) : null}
       </div>
 
-      {transcript && (
+      {transcript ? (
         <Paragraph
           style={{
-            marginBottom: result ? 10 : 0,
+            marginBottom: nestedTools.length > 0 || result ? 12 : 0,
             padding: 12,
             borderRadius: 8,
             background: "#ffffff",
             whiteSpace: "pre-wrap",
           }}
-          ellipsis={!result ? { rows: 4, expandable: true, symbol: "展开" } : false}
+          ellipsis={
+            nestedTools.length > 0 || result
+              ? { rows: 3, expandable: true, symbol: "展开" }
+              : false
+          }
         >
           {transcript}
         </Paragraph>
-      )}
+      ) : null}
 
-      {(transcript || result) && (
+      {nestedTools.length > 0 ? (
+        <div style={{ marginBottom: hasDetails ? 12 : 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexWrap: "wrap",
+              marginBottom: 10,
+            }}
+          >
+            <Text strong>工具活动</Text>
+            <Tag>{`${childToolSummary.total} 个工具`}</Tag>
+            {childToolSummary.runningCount > 0 ? (
+              <Tag color="processing">{`${childToolSummary.runningCount} 进行中`}</Tag>
+            ) : null}
+            {childToolSummary.successCount > 0 ? (
+              <Tag color="success">{`${childToolSummary.successCount} 完成`}</Tag>
+            ) : null}
+            {childToolSummary.failedCount > 0 ? (
+              <Tag color="error">{`${childToolSummary.failedCount} 失败`}</Tag>
+            ) : null}
+          </div>
+          <div style={{ display: "grid", gap: 10 }}>
+            {nestedTools.map((tool) => (
+              <ToolCallCard key={tool.id} toolCall={tool} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {hasDetails ? (
         <Collapse
           ghost
+          defaultActiveKey={status === "running" ? ["details"] : []}
           items={[
             {
               key: "details",
-              label: "查看过程",
+              label: result ? "执行详情" : "过程记录",
               children: (
                 <div style={{ display: "grid", gap: 14 }}>
-                  {transcript && (
+                  {transcript ? (
                     <div>
                       <Text strong style={{ display: "block", marginBottom: 6 }}>
-                        过程转写
+                        过程记录
                       </Text>
                       <pre
                         style={{
@@ -110,8 +165,9 @@ const SubAgentCard: React.FC<SubAgentCardProps> = ({
                         {transcript}
                       </pre>
                     </div>
-                  )}
-                  {result && (
+                  ) : null}
+
+                  {result ? (
                     <div>
                       <Text strong style={{ display: "block", marginBottom: 6 }}>
                         最终结果
@@ -129,13 +185,13 @@ const SubAgentCard: React.FC<SubAgentCardProps> = ({
                         {result}
                       </pre>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               ),
             },
           ]}
         />
-      )}
+      ) : null}
     </Card>
   );
 };

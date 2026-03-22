@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import {
   Card, Button, Table, Modal, Form, Input, Select, Upload, message,
-  Popconfirm, Tag, Space, Drawer, Progress, Empty, Typography,
+  Popconfirm, Tag, Space, Drawer, Progress, Empty, Typography, Spin,
   Collapse, Switch, InputNumber, Tooltip, Divider, Alert
 } from 'antd';
 import {
@@ -13,7 +13,7 @@ import type { RcFile } from 'antd/es/upload/interface';
 import { knowledgeApi } from '../services/knowledgeApi';
 import type { KnowledgeBase, KBDocument, ProcessingStage } from '../types/knowledge';
 import { EMBEDDING_MODELS, DEFAULT_RAG_CONFIG, PROCESSING_STAGE_INFO, LLM_MODELS } from '../types/knowledge';
-import KnowledgeGraph from '../components/Knowledge/KnowledgeGraph';
+const KnowledgeGraph = lazy(() => import('../components/Knowledge/KnowledgeGraph'));
 
 const { Dragger } = Upload;
 const { Text } = Typography;
@@ -784,7 +784,19 @@ const KnowledgeBasePage: React.FC = () => {
         destroyOnClose
       >
         {graphKB && (
-          <KnowledgeGraph kbId={graphKB.id} kbName={graphKB.name} />
+          <Suspense
+            fallback={
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                <Spin size="large" tip="Loading graph workspace..." />
+              </div>
+            }
+          >
+            <KnowledgeGraph
+              kbId={graphKB.id}
+              kbName={graphKB.name}
+              storageKey={`knowledge-base-graph-view-mode:${graphKB.id}`}
+            />
+          </Suspense>
         )}
       </Drawer>
     </div>

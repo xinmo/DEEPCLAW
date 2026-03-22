@@ -241,33 +241,33 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
+FILESYSTEM_SYSTEM_PROMPT = """## 遵循约定
 
-- Read files before editing — understand existing content before making changes
-- Mimic existing style, naming conventions, and patterns
+- 编辑前先阅读文件 — 在进行更改前理解现有内容
+- 模仿现有的风格、命名约定和模式
 
-## Tool Usage and File Reading
+## 工具使用和文件阅读
 
-Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
+遵循可用工具的工具文档。特别是对于文件系统工具，在读取大文件时使用分页（offset/limit）。
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+## 文件系统工具 `ls`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`
 
-You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /.
+你可以使用这些工具访问文件系统。
+所有文件路径必须以 / 开头。
 
-- ls: list files in a directory (requires absolute path)
-- read_file: read a file from the filesystem
-- write_file: write to a file in the filesystem
-- edit_file: edit a file in the filesystem
-- glob: find files matching a pattern (e.g., "**/*.py")
-- grep: search for text within files"""
+- ls: 列出目录中的文件（需要绝对路径）
+- read_file: 从文件系统读取文件
+- write_file: 写入文件系统中的文件
+- edit_file: 编辑文件系统中的文件
+- glob: 查找匹配模式的文件（例如 "**/*.py"）
+- grep: 在文件中搜索文本"""
 
-EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
+EXECUTION_SYSTEM_PROMPT = """## 执行工具 `execute`
 
-You have access to an `execute` tool for running shell commands in a sandboxed environment.
-Use this tool to run commands, scripts, tests, builds, and other shell operations.
+你可以访问 `execute` 工具，用于在沙箱环境中运行 shell 命令。
+使用此工具运行命令、脚本、测试、构建和其他 shell 操作。
 
-- execute: run a shell command in the sandbox (returns output and exit code)"""
+- execute: 在沙箱中运行 shell 命令（返回输出和退出代码）"""
 
 
 def _supports_execution(backend: BackendProtocol) -> bool:
@@ -580,8 +580,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 if responses and responses[0].content is not None:
                     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
                     image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
+                    # Return text description instead of image block for OpenAI-compatible models
                     return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        content=f"Image file read successfully: {validated_path}\nMedia type: {media_type}\nSize: {len(responses[0].content)} bytes\nBase64 data available but not displayed (OpenAI-compatible models don't support image content blocks)",
                         name="read_file",
                         tool_call_id=runtime.tool_call_id,
                         additional_kwargs={
@@ -634,8 +635,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 if responses and responses[0].content is not None:
                     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
                     image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
+                    # Return text description instead of image block for OpenAI-compatible models
                     return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        content=f"Image file read successfully: {validated_path}\nMedia type: {media_type}\nSize: {len(responses[0].content)} bytes\nBase64 data available but not displayed (OpenAI-compatible models don't support image content blocks)",
                         name="read_file",
                         tool_call_id=runtime.tool_call_id,
                         additional_kwargs={

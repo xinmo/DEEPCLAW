@@ -2,6 +2,8 @@ import type {
   ChannelListResponse,
   QQChannelConfigPayload,
   QQChannelDetail,
+  QQChannelLogsResponse,
+  QQChannelTestResult,
 } from "../types/channel";
 
 const API_BASE = "/api/channels";
@@ -31,5 +33,19 @@ export const channelApi = {
       body: JSON.stringify(payload),
     });
     return expectJson<QQChannelDetail>(response, "保存 QQ 渠道配置失败");
+  },
+
+  async testQQChannel(payload: QQChannelConfigPayload): Promise<QQChannelTestResult> {
+    const response = await fetch(`${API_BASE}/qq/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return expectJson<QQChannelTestResult>(response, "执行 QQ 连接测试失败");
+  },
+
+  async getQQChannelLogs(limit = 100): Promise<QQChannelLogsResponse> {
+    const response = await fetch(`${API_BASE}/qq/logs?limit=${limit}`);
+    return expectJson<QQChannelLogsResponse>(response, "加载 QQ 运行日志失败");
   },
 };

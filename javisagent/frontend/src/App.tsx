@@ -7,6 +7,7 @@ import "./styles/global.css";
 
 const ClawChatPage = lazy(() => import("./pages/ClawChatPage"));
 const ChannelsPage = lazy(() => import("./pages/ChannelsPage"));
+const ClawMcpPage = lazy(() => import("./pages/ClawMcpPage"));
 const ClawSkillsPage = lazy(() => import("./pages/ClawSkillsPage"));
 const DocumentParsePage = lazy(() => import("./pages/DocumentParsePage"));
 const IndustryResearchPage = lazy(() => import("./pages/IndustryResearchPage"));
@@ -70,6 +71,8 @@ const App: React.FC = () => {
         return <PromptManagementPage />;
       case "channel-qq":
         return <ChannelsPage initialChannel="qq" />;
+      case "mcp-management":
+        return <ClawMcpPage />;
       case "industry-research":
         return <IndustryResearchPage />;
       default:

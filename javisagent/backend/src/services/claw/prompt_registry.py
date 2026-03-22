@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ._bootstrap import ensure_local_dependency_paths
+
+ensure_local_dependency_paths()
+
 CONFIG_DIR = Path(__file__).resolve().parents[4] / "config"
 PROMPTS_FILE = CONFIG_DIR / "claw_prompts.json"
 LEGACY_SYSTEM_PROMPT_FILE = CONFIG_DIR / "system_prompt.txt"
+LOCAL_DEEPAGENTS_ROOT = Path(__file__).resolve().parents[4] / "libs" / "deepagents" / "deepagents"
 
 SYSTEM_PROMPT_ID = "system_prompt"
 BASE_AGENT_PROMPT_ID = "base_agent_prompt"
@@ -30,30 +36,96 @@ class PromptDefinition:
     variables: tuple[str, ...] = ()
 
 
-def _default_system_prompt() -> str:
-    # Lazy import avoids a circular dependency with create_claw_agent().
-    from .agent import SYSTEM_PROMPT_TEMPLATE
+def _load_python_constant(module_path: Path, constant_name: str) -> str:
+    module = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == constant_name:
+                value = ast.literal_eval(node.value)
+                if isinstance(value, str):
+                    return value
+                break
 
-    return SYSTEM_PROMPT_TEMPLATE
+    msg = f"Unable to load constant {constant_name} from {module_path}"
+    raise KeyError(msg)
+
+
+def _load_deepagents_prompt_defaults() -> dict[str, str]:
+    try:
+        return {
+            "FILESYSTEM_SYSTEM_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "middleware" / "filesystem.py",
+                "FILESYSTEM_SYSTEM_PROMPT",
+            ),
+            "EXECUTION_SYSTEM_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "middleware" / "filesystem.py",
+                "EXECUTION_SYSTEM_PROMPT",
+            ),
+            "MEMORY_SYSTEM_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "middleware" / "memory.py",
+                "MEMORY_SYSTEM_PROMPT",
+            ),
+            "SKILLS_SYSTEM_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "middleware" / "skills.py",
+                "SKILLS_SYSTEM_PROMPT",
+            ),
+            "DEFAULT_SUBAGENT_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "middleware" / "subagents.py",
+                "DEFAULT_SUBAGENT_PROMPT",
+            ),
+            "TASK_SYSTEM_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "middleware" / "subagents.py",
+                "TASK_SYSTEM_PROMPT",
+            ),
+            "SUMMARIZATION_SYSTEM_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "middleware" / "summarization.py",
+                "SUMMARIZATION_SYSTEM_PROMPT",
+            ),
+            "BASE_AGENT_PROMPT": _load_python_constant(
+                LOCAL_DEEPAGENTS_ROOT / "prompt_defaults.py",
+                "BASE_AGENT_PROMPT",
+            ),
+        }
+    except (FileNotFoundError, KeyError, SyntaxError, UnicodeDecodeError, ValueError):
+        from deepagents.middleware.filesystem import (
+            EXECUTION_SYSTEM_PROMPT,
+            FILESYSTEM_SYSTEM_PROMPT,
+        )
+        from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
+        from deepagents.middleware.skills import SKILLS_SYSTEM_PROMPT
+        from deepagents.middleware.subagents import (
+            DEFAULT_SUBAGENT_PROMPT,
+            TASK_SYSTEM_PROMPT,
+        )
+        from deepagents.middleware.summarization import SUMMARIZATION_SYSTEM_PROMPT
+        from deepagents.prompt_defaults import BASE_AGENT_PROMPT
+
+        return {
+            "FILESYSTEM_SYSTEM_PROMPT": FILESYSTEM_SYSTEM_PROMPT,
+            "EXECUTION_SYSTEM_PROMPT": EXECUTION_SYSTEM_PROMPT,
+            "MEMORY_SYSTEM_PROMPT": MEMORY_SYSTEM_PROMPT,
+            "SKILLS_SYSTEM_PROMPT": SKILLS_SYSTEM_PROMPT,
+            "DEFAULT_SUBAGENT_PROMPT": DEFAULT_SUBAGENT_PROMPT,
+            "TASK_SYSTEM_PROMPT": TASK_SYSTEM_PROMPT,
+            "SUMMARIZATION_SYSTEM_PROMPT": SUMMARIZATION_SYSTEM_PROMPT,
+            "BASE_AGENT_PROMPT": BASE_AGENT_PROMPT,
+        }
+
+
+def _default_system_prompt() -> str:
+    return _load_python_constant(
+        Path(__file__).resolve().with_name("agent.py"),
+        "SYSTEM_PROMPT_TEMPLATE",
+    )
 
 
 def _get_prompt_definitions() -> list[PromptDefinition]:
-    from deepagents.middleware.filesystem import (
-        EXECUTION_SYSTEM_PROMPT,
-        FILESYSTEM_SYSTEM_PROMPT,
-    )
-    from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
-    from deepagents.middleware.skills import SKILLS_SYSTEM_PROMPT
-    from deepagents.middleware.subagents import (
-        DEFAULT_SUBAGENT_PROMPT,
-        TASK_SYSTEM_PROMPT,
-    )
-    from deepagents.middleware.summarization import (
-        DEFAULT_SUMMARY_PROMPT,
-        SUMMARIZATION_SYSTEM_PROMPT,
-    )
-    from deepagents.prompt_defaults import BASE_AGENT_PROMPT
+    from langchain.agents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
     from langchain.agents.middleware.todo import WRITE_TODOS_SYSTEM_PROMPT
+
+    prompt_defaults = _load_deepagents_prompt_defaults()
 
     return [
         PromptDefinition(
@@ -67,7 +139,7 @@ def _get_prompt_definitions() -> list[PromptDefinition]:
             id=BASE_AGENT_PROMPT_ID,
             name="BASE_AGENT_PROMPT",
             description="DeepAgents base behavior prompt appended after the Claw system prompt.",
-            default_content=BASE_AGENT_PROMPT,
+            default_content=prompt_defaults["BASE_AGENT_PROMPT"],
         ),
         PromptDefinition(
             id=TODO_SYSTEM_PROMPT_ID,
@@ -80,20 +152,23 @@ def _get_prompt_definitions() -> list[PromptDefinition]:
             name="FilesystemMiddleware",
             description="Combined filesystem and execute-tool guidance injected by FilesystemMiddleware.",
             default_content="\n\n".join(
-                [FILESYSTEM_SYSTEM_PROMPT, EXECUTION_SYSTEM_PROMPT]
+                [
+                    prompt_defaults["FILESYSTEM_SYSTEM_PROMPT"],
+                    prompt_defaults["EXECUTION_SYSTEM_PROMPT"],
+                ]
             ).strip(),
         ),
         PromptDefinition(
             id=TASK_SYSTEM_PROMPT_ID,
             name="SubAgentMiddleware TASK_SYSTEM_PROMPT",
             description="Main-agent instructions for when to delegate work through the task tool.",
-            default_content=TASK_SYSTEM_PROMPT,
+            default_content=prompt_defaults["TASK_SYSTEM_PROMPT"],
         ),
         PromptDefinition(
             id=GENERAL_PURPOSE_SUBAGENT_PROMPT_ID,
             name="General-purpose Subagent Prompt",
             description="Default system prompt used by the built-in general-purpose subagent.",
-            default_content=DEFAULT_SUBAGENT_PROMPT,
+            default_content=prompt_defaults["DEFAULT_SUBAGENT_PROMPT"],
         ),
         PromptDefinition(
             id=SUMMARIZATION_SUMMARY_PROMPT_ID,
@@ -105,21 +180,21 @@ def _get_prompt_definitions() -> list[PromptDefinition]:
             id=MEMORY_SYSTEM_PROMPT_ID,
             name="MemoryMiddleware",
             description="Prompt template that injects persistent global memory from ~/.memory/AGENTS.md into the main agent.",
-            default_content=MEMORY_SYSTEM_PROMPT,
+            default_content=prompt_defaults["MEMORY_SYSTEM_PROMPT"],
             variables=("agent_memory",),
         ),
         PromptDefinition(
             id=SKILLS_SYSTEM_PROMPT_ID,
             name="SkillsMiddleware",
             description="Prompt template that exposes built-in global skills loaded from ~/.agents/skills.",
-            default_content=SKILLS_SYSTEM_PROMPT,
+            default_content=prompt_defaults["SKILLS_SYSTEM_PROMPT"],
             variables=("skills_locations", "skills_list"),
         ),
         PromptDefinition(
             id=SUMMARIZATION_TOOL_SYSTEM_PROMPT_ID,
             name="SummarizationToolMiddleware",
             description="Prompt that teaches the agent when and how to use compact_conversation.",
-            default_content=SUMMARIZATION_SYSTEM_PROMPT,
+            default_content=prompt_defaults["SUMMARIZATION_SYSTEM_PROMPT"],
         ),
     ]
 
