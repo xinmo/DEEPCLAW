@@ -129,3 +129,10 @@ After starting the backend server, visit `http://localhost:8000/docs` for auto-g
 ## License
 
 MIT
+
+
+thanks to : 
+https://docs.langchain.com/oss/python/deepagents/overview
+https://github.com/langchain-ai/deepagents
+
+nanobot: https://github.com/nanobotai/nanobot
