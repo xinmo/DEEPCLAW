@@ -1,131 +1,131 @@
-# DEEPCLAW 工作台
+# DEEPCLAW Workspace
 
-DEEPCLAW 是一个智能 AI 工作台，基于大语言模型（LLM）的代码助手与任务自动化平台。使用了Deepagents架构作为后端服务，并使用nanobot渠道管理用于接入外部消息渠道。
+An intelligent AI workspace, powered by Large Language Models (LLM) for code assistance and task automation.
 
-## 功能特性
+## Features
 
-- **Claw Agent** — 基于 LLM 的智能助手，支持多轮对话、流式响应和工具调用
-- **Prompt 管理** — 创建、编辑和管理系统提示词
-- **技能系统** — 注册和管理 AI 技能，扩展 Agent 能力
-- **MCP 工具接入** — 通过 Model Context Protocol 接入外部工具服务器
-- **文档解析** — 使用 MinerU API 将 PDF、DOC、图片等转换为 Markdown
-- **渠道接入** — QQ 机器人频道支持
+- **Claw Agent** — LLM-powered intelligent assistant with multi-turn conversations, streaming responses, and tool calling
+- **Prompt Management** — Create, edit, and manage system prompts
+- **Skills System** — Register and manage AI skills to extend agent capabilities
+- **MCP Tool Integration** — Connect to external tool servers via Model Context Protocol
+- **Document Parsing** — Convert PDF, DOC, images to Markdown using MinerU API
+- **Channel Access** — QQ bot channel support
 
-## 技术栈
+## Tech Stack
 
-- **前端**：React + TypeScript + Vite + Ant Design + Lucide React
-- **后端**：Python + FastAPI + SQLAlchemy + SQLite
-- **AI**：OpenAI GPT-4o, Anthropic Claude, DeepSeek, 智谱 GLM, 通义
+- **Frontend**: React + TypeScript + Vite + Ant Design + Lucide React
+- **Backend**: Python + FastAPI + SQLAlchemy + SQLite
+- **AI**: OpenAI GPT-4o, Anthropic Claude, DeepSeek, Zhipu GLM, Tongyi
 
-## 快速开始
+## Quick Start
 
-### 前置条件
+### Prerequisites
 
 - Node.js 16+
 - Python 3.10+
 - pip
 - npm
 
-### 安装步骤
+### Installation
 
-1. **克隆项目**
+1. **Clone the project**
 
-2. **安装前端依赖**
+2. **Install frontend dependencies**
    ```bash
    cd javisagent/frontend
    npm install
    ```
 
-3. **安装后端依赖**
+3. **Install backend dependencies**
    ```bash
    cd javisagent/backend
    pip install -r requirements.txt
    ```
 
-4. **配置环境变量**
-   复制 `javisagent/backend/.env.example` 文件为 `.env`，填写必要的 API Key
+4. **Configure environment variables**
+   Copy `javisagent/backend/.env.example` to `.env` and fill in your API keys
 
-5. **启动后端服务**
+5. **Start backend server**
    ```bash
    cd javisagent/backend
    python src/main.py
    ```
 
-6. **启动前端服务**
+6. **Start frontend server**
    ```bash
    cd javisagent/frontend
    npm run dev
    ```
 
-7. **访问应用**
-   打开浏览器访问 `http://localhost:5173`
+7. **Access the app**
+   Open browser at `http://localhost:5173`
 
-## 项目结构
+## Project Structure
 
 ```
 javisagent/
-├── frontend/                    # 前端代码
+├── frontend/                    # Frontend code
 │   ├── src/
-│   │   ├── pages/              # 页面组件
-│   │   │   ├── ClawChatPage.tsx     # AI 对话页面
-│   │   │   ├── ClawMcpPage.tsx      # MCP 工具管理
-│   │   │   ├── ClawSkillsPage.tsx    # 技能管理
-│   │   │   ├── PromptManagementPage.tsx # Prompt 管理
-│   │   │   └── ChannelsPage.tsx      # 渠道接入
-│   │   ├── components/         # 组件
-│   │   │   ├── Claw/           # Claw 相关组件
-│   │   │   └── Layout/         # 布局组件
-│   │   ├── services/           # API 服务
-│   │   └── types/              # 类型定义
+│   │   ├── pages/              # Page components
+│   │   │   ├── ClawChatPage.tsx     # AI chat page
+│   │   │   ├── ClawMcpPage.tsx      # MCP tool management
+│   │   │   ├── ClawSkillsPage.tsx    # Skills management
+│   │   │   ├── PromptManagementPage.tsx # Prompt management
+│   │   │   └── ChannelsPage.tsx      # Channel access
+│   │   ├── components/         # Components
+│   │   │   ├── Claw/           # Claw-related components
+│   │   │   └── Layout/         # Layout components
+│   │   ├── services/           # API services
+│   │   └── types/              # Type definitions
 │   └── package.json
-├── backend/                     # 后端代码
+├── backend/                     # Backend code
 │   ├── src/
-│   │   ├── app.py              # FastAPI 应用
-│   │   ├── main.py             # 入口点
-│   │   ├── models/             # 数据模型
-│   │   ├── routes/             # API 路由
-│   │   │   ├── claw/           # Claw Agent 路由
-│   │   │   ├── document.py     # 文档解析
-│   │   │   └── channels.py     # 渠道接入
-│   │   ├── services/           # 服务层
-│   │   │   ├── claw/           # Claw Agent 核心
-│   │   │   ├── mineru.py       # MinerU 客户端
-│   │   │   └── channels/       # 渠道服务
-│   │   ├── schemas/            # 数据 Schema
-│   │   └── utils/              # 工具函数
+│   │   ├── app.py              # FastAPI app
+│   │   ├── main.py             # Entry point
+│   │   ├── models/             # Data models
+│   │   ├── routes/             # API routes
+│   │   │   ├── claw/           # Claw Agent routes
+│   │   │   ├── document.py     # Document parsing
+│   │   │   └── channels.py     # Channel access
+│   │   ├── services/           # Service layer
+│   │   │   ├── claw/           # Claw Agent core
+│   │   │   ├── mineru.py       # MinerU client
+│   │   │   └── channels/       # Channel services
+│   │   ├── schemas/            # Data schemas
+│   │   └── utils/              # Utilities
 │   └── requirements.txt
-├── config/                      # 配置文件
-├── docker-compose.milvus.yml    # Milvus 向量数据库配置
+├── config/                      # Configuration files
+├── docker-compose.milvus.yml    # Milvus vector database config
 └── README.md
 ```
 
-## 内置工具
+## Built-in Tools
 
-Claw Agent 提供以下内置工具：
+Claw Agent provides the following built-in tools:
 
-- **file_write** — 写入文件内容
-- **file_read** — 读取文件内容
-- **bash** — 执行 Shell 命令
-- **web_search** — 网络搜索 (需要 TAVILY_API_KEY)
-- **fetch_url** — 获取网页内容
+- **file_write** — Write file content
+- **file_read** — Read file content
+- **bash** — Execute shell commands
+- **web_search** — Web search (requires TAVILY_API_KEY)
+- **fetch_url** — Fetch web page content
 
-## MCP 支持
+## MCP Support
 
-DEEPCLAW 支持通过 MCP (Model Context Protocol) 接入外部工具服务器。配置 MCP 服务器后，这些工具会自动出现在 Claw Agent 的工具列表中。
+DEEPCLAW supports connecting to external tool servers via MCP (Model Context Protocol). Once MCP servers are configured, these tools will automatically appear in Claw Agent's tool list.
 
-## API 文档
+## API Documentation
 
-启动后端服务后，可访问 `http://localhost:8000/docs` 查看自动生成的 API 文档。
+After starting the backend server, visit `http://localhost:8000/docs` for auto-generated API documentation.
 
-## 环境变量
+## Environment Variables
 
-| 变量名 | 必填 | 说明 |
-|--------|------|------|
-| `OPENAI_API_KEY` | 是 | OpenAI API Key |
-| `ANTHROPIC_API_KEY` | 是 | Anthropic API Key (Claude) |
-| `MINERU_API_TOKEN` | 否 | MinerU 文档解析 |
-| `TAVILY_API_KEY` | 否 | Tavily 网络搜索 |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Yes | OpenAI API Key |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API Key (Claude) |
+| `MINERU_API_TOKEN` | No | MinerU document parsing |
+| `TAVILY_API_KEY` | No | Tavily web search |
 
-## 许可证
+## License
 
 MIT
