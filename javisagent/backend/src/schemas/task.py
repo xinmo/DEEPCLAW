@@ -1,7 +1,7 @@
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
 from enum import Enum
 from typing import Optional
+from pydantic import BaseModel
+
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
@@ -9,44 +9,52 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+
 class TaskBase(BaseModel):
     name: str
-    file_id: Optional[str] = None
-    file_name: Optional[str] = None
+    status: TaskStatus = TaskStatus.PENDING
+
 
 class TaskCreate(TaskBase):
     pass
 
+
 class TaskUpdate(BaseModel):
+    name: Optional[str] = None
     status: Optional[TaskStatus] = None
-    result: Optional[str] = None
+
 
 class Task(TaskBase):
     id: str
-    status: TaskStatus
-    result: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: str
+    updated_at: Optional[str] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        from_attributes = True
+
 
 class UploadResponse(BaseModel):
     file_id: str
     file_name: str
 
+
 class ParseResponse(BaseModel):
     task_id: str
 
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    result: Optional[str] = None
+    error: Optional[str] = None
+
+
 class ParseRequest(BaseModel):
-    file_id: Optional[str] = None
-    file_name: Optional[str] = None
-    url: Optional[str] = None
+    file_id: str
+    file_name: str
+
 
 class ExtractProgress(BaseModel):
     extracted_pages: int
-    total_pages: int
-
-class TaskStatusResponse(BaseModel):
-    task: Task
-    result: Optional[str] = None
-    progress: Optional[ExtractProgress] = None
+    total_pages: Optional[int] = None
+    status: str

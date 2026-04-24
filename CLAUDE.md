@@ -4,10 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAVISAGENT 是一个智能工作台，提供三大核心功能模块：
-1. **智能解析** — 使用 MinerU API 将文档和网页转换为 Markdown
-2. **智能翻译** — 实时语音翻译、声音克隆、会议同传
-3. **智能知识库** — RAG 知识库管理与问答系统
+DEEPCLAW 是一个智能工作台，基于 AI 大语言模型（LLM）的代码助手与任务自动化平台。
 
 技术栈：React + TypeScript + Vite + Ant Design 前端，Python FastAPI + SQLAlchemy 后端。
 
@@ -33,21 +30,20 @@ Vite proxies `/api` requests to `http://localhost:8000`. API docs at `http://loc
 ### Environment Setup
 Backend requires a `.env` file in `javisagent/backend/` with:
 
+**Claw Agent 模块：**
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL` — OpenAI API
+- `ANTHROPIC_API_KEY` — Anthropic Claude API
+- `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` — DeepSeek API
+- `ZHIPU_API_KEY` — 智谱 GLM API
+- `DASHSCOPE_API_KEY` — 阿里通义 API
+- `DATABASE_URL` — defaults to `sqlite:///./javisagent.db`
+- `TAVILY_API_KEY` — Tavily 网络搜索 (可选)
+
 **文档解析模块：**
 - `MINERU_API_TOKEN` — from https://mineru.net
-- `DATABASE_URL` — defaults to `sqlite:///./javisagent.db`
 
-**翻译模块：**
-- `ELEVENLABS_API_KEY` — ElevenLabs 语音合成/克隆
-- `XFYUN_APP_ID`, `XFYUN_API_KEY`, `XFYUN_API_SECRET` — 科大讯飞 ASR/翻译
-
-**知识库模块：**
-- `MILVUS_HOST`, `MILVUS_PORT` — Milvus 向量数据库 (默认 localhost:19530)
-- `OPENAI_API_KEY`, `OPENAI_BASE_URL` — OpenAI Embedding & LLM
-- `ANTHROPIC_API_KEY` — Claude LLM
-- `ZHIPU_API_KEY` — 智谱 AI
-- `DASHSCOPE_API_KEY` — 阿里通义
-- `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` — DeepSeek
+**渠道接入模块：**
+- `QQ_BOT_TOKEN`, `QQ_BOT_SECRET` — QQ 机器人配置
 
 ## Architecture
 
@@ -55,33 +51,32 @@ Backend requires a `.env` file in `javisagent/backend/` with:
 ```
 src/
 ├── pages/
-│   ├── DocumentParsePage.tsx    # 文档解析页面
-│   ├── RealtimeTranslatePage.tsx # 实时翻译页面
-│   ├── KnowledgeBasePage.tsx    # 知识库管理页面
-│   └── KnowledgeChatPage.tsx    # 知识问答页面
+│   ├── ClawChatPage.tsx         # Claw AI 对话页面
+│   ├── ClawMcpPage.tsx          # MCP 工具管理
+│   ├── ClawSkillsPage.tsx       # 技能管理
+│   ├── PromptManagementPage.tsx  # Prompt 管理
+│   ├── ChannelsPage.tsx          # 渠道接入 (QQ)
+│   └── FileWriteDrawerPrototype.html # 文件写入抽屉原型
 ├── components/
-│   ├── DocumentParse/           # 文档解析组件
-│   │   ├── FileUpload.tsx
-│   │   ├── FilePreview.tsx
-│   │   ├── MarkdownViewer.tsx
-│   │   └── TaskList.tsx
-│   ├── Translate/               # 翻译组件
-│   │   ├── VoiceClone.tsx       # 声音克隆
-│   │   ├── TextToSpeech.tsx     # 文字转语音
-│   │   └── MeetingMode.tsx      # 会议翻译模式
+│   ├── Claw/
+│   │   ├── DirectoryBrowser.tsx   # 目录浏览
+│   │   ├── PlanningCard.tsx        # 规划卡片
+│   │   ├── PromptDebugPanel.tsx    # Prompt 调试面板
+│   │   ├── ShellExecutionCard.tsx  # Shell 执行卡片
+│   │   ├── SubAgentCard.tsx        # 子代理卡片
+│   │   └── ToolCallCard.tsx        # 工具调用卡片
 │   └── Layout/
 │       ├── AppLayout.tsx
 │       └── SideMenu.tsx
 ├── services/
-│   ├── api.ts                   # 文档解析 API
-│   ├── translateApi.ts          # 翻译 API
-│   └── knowledgeApi.ts          # 知识库 API
+│   ├── clawApi.ts               # Claw Agent API
+│   ├── promptApi.ts             # Prompt 管理 API
+│   └── channelApi.ts            # 渠道 API
 ├── hooks/
-│   ├── useWebSocket.ts          # WebSocket 连接
-│   └── useAudioPlayer.ts        # 音频播放
+│   └── useWebSocket.ts          # WebSocket 连接
 └── types/
-    ├── translate.ts             # 翻译类型定义
-    └── knowledge.ts             # 知识库类型定义
+    ├── claw.ts                  # Claw 类型定义
+    └── channel.ts               # 渠道类型定义
 ```
 
 ### Backend Structure
@@ -89,92 +84,91 @@ src/
 src/
 ├── main.py                      # Entry point
 ├── app.py                       # FastAPI app, CORS, routers
+├── init_db.py                   # 数据库初始化
+├── models/
+│   ├── base.py                  # SQLAlchemy Base
+│   ├── claw.py                  # Claw 会话/消息/工具调用模型
+│   ├── channels.py             # QQ 渠道配置模型
+│   └── task.py                  # 解析任务模型
+├── schemas/
+│   ├── claw.py                  # Claw 请求/响应 Schema
+│   ├── channels.py             # 渠道 Schema
+│   └── task.py                  # 任务 Schema
 ├── routes/
 │   ├── document.py              # 文档解析路由
-│   ├── translate/               # 翻译路由
-│   │   ├── clone.py             # 声音克隆 API
-│   │   └── ws.py                # WebSocket 实时翻译
-│   └── knowledge/               # 知识库路由
-│       ├── kb.py                # 知识库 CRUD
-│       ├── documents.py         # 文档管理
-│       └── chat.py              # 问答聊天 (SSE 流式)
+│   ├── channels.py             # QQ 渠道路由
+│   └── claw/
+│       ├── conversations.py    # 会话管理
+│       ├── chat.py              # 对话聊天 (流式)
+│       ├── prompts.py           # Prompt CRUD
+│       ├── skills.py            # 技能注册
+│       └── mcp.py              # MCP 工具管理
 ├── services/
-│   ├── mineru.py                # MinerU API 客户端
-│   ├── translate/               # 翻译服务
-│   │   ├── config.py            # 翻译配置
-│   │   ├── elevenlabs.py        # ElevenLabs TTS/克隆
-│   │   ├── xfyun_asr.py         # 讯飞语音识别
-│   │   ├── xfyun_translate.py   # 讯飞翻译
-│   │   └── meeting.py           # 会议模式逻辑
-│   └── knowledge/               # 知识库服务
-│       ├── config.py            # 知识库配置
-│       ├── embedding.py         # 向量嵌入
-│       ├── vector_store.py      # Milvus 向量存储
-│       ├── retriever.py         # 检索器
-│       ├── llm.py               # LLM 调用
-│       └── document_processor.py # 文档处理/切片
-├── models/
-│   ├── task.py                  # 解析任务模型
-│   └── knowledge.py             # 知识库/文档/对话模型
-├── schemas/
-│   ├── task.py                  # 解析任务 Schema
-│   ├── translate.py             # 翻译 Schema
-│   └── knowledge.py             # 知识库 Schema
+│   ├── mineru.py               # MinerU API 客户端
+│   ├── claw/
+│   │   ├── agent.py            # Claw Agent 核心
+│   │   ├── tools.py            # 内置工具 (web_search, fetch_url, bash, write, read)
+│   │   ├── mcp_tools.py       # MCP 工具桥接 (langchain-mcp-adapters)
+│   │   ├── prompt_registry.py  # Prompt 注册表
+│   │   ├── skill_registry.py  # 技能注册表
+│   │   ├── prompt_debug.py     # Prompt 调试
+│   │   └── local_context.py   # 本地上下文
+│   └── channels/
+│       ├── runtime.py          # 渠道运行时
+│       ├── registry.py         # 渠道注册表
+│       └── claw_bridge.py      # Claw 桥接
 ├── audio/
-│   ├── vad.py                   # 语音活动检测
-│   └── segmenter.py             # 音频分段
+│   ├── vad.py                  # 语音活动检测
+│   └── segmenter.py            # 音频分段
 └── utils/
-    └── file_handler.py          # 文件处理
+    └── file_handler.py         # 文件处理
 ```
 
 ## Module Details
 
-### 1. 智能解析模块
+### 1. Claw Agent
+
+**核心功能：**
+- AI 对话：基于 LLM 的智能助手，支持多轮对话和流式响应
+- Prompt 管理：创建、编辑、删除系统提示词
+- 技能管理：注册和管理 AI 技能
+- MCP 工具：通过 MCP (Model Context Protocol) 接入外部工具服务器
+- 文件操作：内置 file_write, file_read, bash, web_search, fetch_url 等工具
+
+**技术实现：**
+- 支持多种 LLM：OpenAI GPT-4o, Claude, DeepSeek, 智谱 GLM, 通义
+- 流式响应（SSE）
+- MCP 工具接入（通过 langchain-mcp-adapters）
+- 会话持久化 (SQLite)
+- 工具调用记录和展示
+
+### 2. 文档解析模块
 
 **数据流：**
 1. 用户上传文件 → `POST /api/document/upload` → UUID 文件名保存
 2. 触发解析 → `POST /api/document/parse` → 创建 MinerU 任务
 3. 前端轮询 `GET /api/document/task/{task_id}` 获取进度
-4. 解析完成 → Markdown 展示在 `MarkdownViewer`
+4. 解析完成 → Markdown 展示
 
 **MinerU API：**
 - Base URL: `https://mineru.net/api/v4`
-- 支持 URL 直接解析和文件上传解析两种模式
 - 支持格式：PDF, DOC, DOCX, PPT, PPTX, PNG, JPG, HTML
 - 限制：200MB/文件，600页/文件，2000页/天
 
-### 2. 智能翻译模块
+### 3. 渠道接入模块
 
-**功能：**
-- **声音克隆** — 上传音频样本，克隆用户声音
-- **文字转语音** — 使用克隆声音或预设声音合成语音
-- **会议翻译** — 实时中英双向翻译，支持双人会议模式
+**支持：**
+- QQ 机器人：通过 QQ 频道与 Claw Agent 对话
 
 **技术实现：**
-- WebSocket 实时通信
-- 科大讯飞 ASR 语音识别 + 翻译
-- ElevenLabs TTS 语音合成
-- VAD 语音活动检测
-
-### 3. 智能知识库模块
-
-**功能：**
-- 知识库 CRUD 管理
-- 文档上传与自动切片 (支持 PDF, DOC, DOCX, TXT, MD)
-- RAG 检索增强问答
-- SSE 流式响应
-- 多轮对话持久化
-
-**技术实现：**
-- Milvus 向量数据库存储
-- 多 Embedding 模型支持 (OpenAI, 智谱等)
-- 多 LLM 支持 (GPT-4o, Claude, DeepSeek, 通义等)
-- 文档切片：500 字符/块，100 字符重叠
+- botpy 框架
+- 渠道运行时统一管理
+- Claw Agent 桥接
 
 ## Key Patterns
 
 - 状态管理：本地 React state (无 Redux/Context)
 - 任务状态：`PENDING` → `RUNNING` → `COMPLETED` / `FAILED`
 - 前端布局：Ant Design Grid，可折叠侧边栏
-- 实时通信：WebSocket (翻译)，SSE (知识问答)
+- 实时通信：SSE (流式对话)
 - 文件命名：UUID-based

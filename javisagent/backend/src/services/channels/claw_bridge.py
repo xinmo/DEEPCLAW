@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,23 @@ from src.models.channels import ChannelSession
 from src.models.claw import ClawConversation, ClawMessage, MessageRole
 from src.services.claw import create_claw_agent
 from src.services.claw.skill_registry import extract_slash_skill_command, get_skill_detail
+
+try:
+    from src.services.claw import cleanup_claw_agent, resolve_claw_agent
+except ImportError:
+    async def resolve_claw_agent(agent_or_awaitable: Any) -> Any:
+        if inspect.isawaitable(agent_or_awaitable):
+            return await agent_or_awaitable
+        return agent_or_awaitable
+
+    async def cleanup_claw_agent(agent: Any) -> None:
+        cleanup = getattr(agent, "cleanup", None)
+        if not callable(cleanup):
+            return
+
+        result = cleanup()
+        if inspect.isawaitable(result):
+            await result
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +167,7 @@ def _get_or_create_channel_conversation(
 
 async def process_inbound_message(message: Any) -> str:
     db = SessionLocal()
+    agent: Any | None = None
 
     try:
         raw_content = str(getattr(message, "content", "") or "").strip()
@@ -194,16 +213,18 @@ async def process_inbound_message(message: Any) -> str:
         conversation.updated_at = datetime.utcnow()
         db.commit()
 
-        agent = create_claw_agent(
-            working_directory=conversation.working_directory,
-            llm_model=conversation.llm_model,
-            conversation_id=str(conversation.id),
-            custom_system_prompt=conversation.system_prompt,
-            turn_instruction=(
-                _build_selected_skill_turn_instruction(selected_skill_detail)
-                if selected_skill_detail is not None
-                else None
-            ),
+        agent = await resolve_claw_agent(
+            create_claw_agent(
+                working_directory=conversation.working_directory,
+                llm_model=conversation.llm_model,
+                conversation_id=str(conversation.id),
+                custom_system_prompt=conversation.system_prompt,
+                turn_instruction=(
+                    _build_selected_skill_turn_instruction(selected_skill_detail)
+                    if selected_skill_detail is not None
+                    else None
+                ),
+            )
         )
 
         assistant_fragments: list[str] = []
@@ -272,4 +293,5 @@ async def process_inbound_message(message: Any) -> str:
             db.rollback()
         return "渠道消息已收到，但当前处理失败，请稍后再试。"
     finally:
+        await cleanup_claw_agent(agent)
         db.close()

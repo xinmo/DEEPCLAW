@@ -1,24 +1,27 @@
-from sqlalchemy import Column, String, DateTime, Enum
-from sqlalchemy.sql import func
-import enum
-from .base import Base
+import uuid
+from datetime import datetime
+from sqlalchemy import Column, String, DateTime, Enum as SQLEnum, Text
+from sqlalchemy.orm import relationship
 
-class TaskStatus(str, enum.Enum):
+from src.models.base import Base
+import enum
+
+
+class TaskStatus(enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
 
+
 class Task(Base):
     __tablename__ = "tasks"
 
-    id = Column(String, primary_key=True, index=True)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String, nullable=False)
-    status = Column(Enum(TaskStatus), default=TaskStatus.PENDING)
+    status = Column(SQLEnum(TaskStatus), default=TaskStatus.PENDING, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    result = Column(Text, nullable=True)
     file_id = Column(String, nullable=True)
     file_name = Column(String, nullable=True)
-    mineru_task_id = Column(String, nullable=True)
-    mineru_batch_id = Column(String, nullable=True)
-    result = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

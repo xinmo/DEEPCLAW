@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -39,6 +41,23 @@ from src.services.claw.skill_registry import (
     get_skill_detail,
     resolve_skill_reference,
 )
+
+try:
+    from src.services.claw import cleanup_claw_agent, resolve_claw_agent
+except ImportError:
+    async def resolve_claw_agent(agent_or_awaitable: Any) -> Any:
+        if inspect.isawaitable(agent_or_awaitable):
+            return await agent_or_awaitable
+        return agent_or_awaitable
+
+    async def cleanup_claw_agent(agent: Any) -> None:
+        cleanup = getattr(agent, "cleanup", None)
+        if not callable(cleanup):
+            return
+
+        result = cleanup()
+        if inspect.isawaitable(result):
+            await result
 
 logger = logging.getLogger(__name__)
 
@@ -878,6 +897,14 @@ def _normalize_subagent_namespace(namespace: tuple[Any, ...]) -> tuple[str, ...]
     )
 
 
+def _is_internal_tool_namespace(namespace: tuple[Any, ...]) -> bool:
+    flattened = _flatten_namespace_parts(namespace)
+    return bool(flattened) and all(
+        part == "tools" or part.startswith("tools:")
+        for part in flattened
+    )
+
+
 def _collect_embedded_stream_messages(payload: Any) -> list[AIMessage | ToolMessage]:
     messages: list[AIMessage | ToolMessage] = []
     seen_ids: set[int] = set()
@@ -1102,7 +1129,7 @@ async def get_messages(conv_id: UUID, db: Session = Depends(get_db)):
     return result
 
 
-async def chat_event_generator(
+async def _chat_event_generator_impl(
     conv_id: UUID,
     user_message: str,
     conversation: ClawConversation,
@@ -1143,6 +1170,7 @@ async def chat_event_generator(
     prompt_debug_snapshot: dict[str, Any] | None = None
     prompt_debug_persisted = False
     prompt_debug_emitted = False
+    agent: Any | None = None
 
     def touch_conversation() -> None:
         conversation.updated_at = datetime.utcnow()
@@ -1415,6 +1443,9 @@ async def chat_event_generator(
         *,
         allow_pending: bool,
     ) -> str | None:
+        if _is_internal_tool_namespace(namespace):
+            return None
+
         normalized_namespace = _normalize_subagent_namespace(namespace)
         if normalized_namespace in namespace_to_subagent_id:
             return namespace_to_subagent_id[normalized_namespace]
@@ -1743,7 +1774,8 @@ async def chat_event_generator(
                 captured_request=captured_request,
             )
 
-        agent = await create_claw_agent(
+        agent = await resolve_claw_agent(
+            create_claw_agent(
             working_directory=conversation.working_directory,
             llm_model=conversation.llm_model,
             conversation_id=str(conv_id),
@@ -1756,6 +1788,7 @@ async def chat_event_generator(
             debug_capture_callback=(
                 capture_prompt_debug_request if should_capture_prompt_debug else None
             ),
+            )
         )
 
         input_data = {"messages": [{"role": "user", "content": user_message}]}
@@ -1801,7 +1834,9 @@ async def chat_event_generator(
                 if namespace_key and should_track_subagent_namespace(namespace_key):
                     process_event, created = ensure_subagent_binding(namespace_key)
                     embedded_messages = _collect_embedded_stream_messages(data)
+                    should_emit_subagent_update = False
                     if embedded_messages:
+                        should_emit_subagent_update = True
                         log_subagent_debug(
                             namespace=namespace_key,
                             stream_mode=stream_mode,
@@ -1827,6 +1862,7 @@ async def chat_event_generator(
                     current_data["state"] = _jsonable(data)
                     todos = _find_todos(data)
                     if todos is not None:
+                        should_emit_subagent_update = True
                         child_tool_status = (
                             "success"
                             if _derive_planning_status(todos) == "completed"
@@ -1857,14 +1893,15 @@ async def chat_event_generator(
                             tool_id=current_data.get("tool_id"),
                             status=process_event.status,
                         )
-                    yield _sse_event(
-                        "subagent_updated",
-                        item_id=process_event.id,
-                        tool_id=current_data.get("tool_id"),
-                        status=process_event.status,
-                        state=current_data.get("state"),
-                        child_tools=current_data.get("child_tools"),
-                    )
+                    if should_emit_subagent_update:
+                        yield _sse_event(
+                            "subagent_updated",
+                            item_id=process_event.id,
+                            tool_id=current_data.get("tool_id"),
+                            status=process_event.status,
+                            state=current_data.get("state"),
+                            child_tools=current_data.get("child_tools"),
+                        )
                     continue
 
                 todos = _find_todos(data)
@@ -2473,6 +2510,70 @@ async def chat_event_generator(
             yield _sse_event("error", message=friendly_msg)
         else:
             yield _sse_event("error", message=str(exc))
+    finally:
+        await cleanup_claw_agent(agent)
+
+
+async def chat_event_generator(
+    conv_id: UUID,
+    user_message: str,
+    conversation: ClawConversation,
+    db: Session,
+    selected_skill_name: str | None = None,
+) -> AsyncGenerator[str, None]:
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    advance: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
+    stream_done = object()
+
+    async def producer() -> None:
+        inner_generator = _chat_event_generator_impl(
+            conv_id,
+            user_message,
+            conversation,
+            db,
+            selected_skill_name=selected_skill_name,
+        )
+        try:
+            while True:
+                await advance.get()
+                try:
+                    event = await inner_generator.__anext__()
+                except StopAsyncIteration:
+                    break
+                queue.put_nowait(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Chat stream producer crashed")
+            queue.put_nowait(_sse_event("error", message="Internal server error"))
+        finally:
+            try:
+                await inner_generator.aclose()
+            except (RuntimeError, StopAsyncIteration):
+                pass
+            queue.put_nowait(stream_done)
+
+    producer_task = asyncio.create_task(
+        producer(),
+        name=f"claw-chat-stream-{conv_id}",
+    )
+    advance.put_nowait(None)
+
+    try:
+        while True:
+            event = await queue.get()
+            if event is stream_done:
+                break
+            yield event
+            if not producer_task.done():
+                advance.put_nowait(None)
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+        try:
+            await producer_task
+        except asyncio.CancelledError:
+            pass
 
 
 @router.post("/conversations/{conv_id}/chat")

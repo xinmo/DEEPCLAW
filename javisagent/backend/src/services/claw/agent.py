@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import os
 from pathlib import Path
 from collections.abc import Callable
@@ -30,6 +32,63 @@ CLAW_MEMORY_FILE = CLAW_MEMORY_DIR / "AGENTS.md"
 CLAW_SKILLS_DIR = CLAW_USER_HOME / ".agents" / "skills"
 CLAW_CONVERSATION_HISTORY_DIR = CLAW_USER_HOME / ".conversation_history"
 CLAW_MEMORY_SOURCE = "/memory/AGENTS.md"
+
+
+class ManagedClawAgent:
+    """Proxy object that keeps external resources alive for an agent run."""
+
+    def __init__(self, agent: Any, *, cleanup_callback: Callable[[], Any] | None = None):
+        self._agent = agent
+        self._cleanup_callback = cleanup_callback
+        self._closed = False
+
+    async def cleanup(self) -> None:
+        if self._closed or self._cleanup_callback is None:
+            self._closed = True
+            return
+
+        self._closed = True
+        result = self._cleanup_callback()
+        if inspect.isawaitable(result):
+            await result
+
+    async def aclose(self) -> None:
+        await self.cleanup()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._agent, name)
+
+
+async def resolve_claw_agent(agent_or_awaitable: Any) -> Any:
+    """Normalize sync test doubles and the real async agent factory."""
+
+    if inspect.isawaitable(agent_or_awaitable):
+        return await agent_or_awaitable
+    return agent_or_awaitable
+
+
+async def cleanup_claw_agent(agent: Any) -> None:
+    """Run agent cleanup in the current task even if cancellation is pending."""
+
+    cleanup = getattr(agent, "cleanup", None)
+    if not callable(cleanup):
+        return
+
+    current_task = asyncio.current_task()
+    cancel_count = current_task.cancelling() if current_task is not None else 0
+
+    if current_task is not None and cancel_count:
+        for _ in range(cancel_count):
+            current_task.uncancel()
+
+    try:
+        result = cleanup()
+        if inspect.isawaitable(result):
+            await result
+    finally:
+        if current_task is not None and cancel_count:
+            for _ in range(cancel_count):
+                current_task.cancel()
 
 
 def _create_llm(llm_model: str, model_config: dict[str, str], api_key: str):
@@ -395,6 +454,7 @@ async def create_claw_agent(
         Deep Agent 实例
     """
     try:
+        mcp_manager = None
         # 验证工作目录
         if not os.path.exists(working_directory):
             raise ValueError(f"工作目录不存在: {working_directory}")
@@ -442,6 +502,7 @@ async def create_claw_agent(
                 _mcp_config = load_mcp_config(_mcp_config_path)
                 if _mcp_config.get("mcpServers"):
                     _mcp_tools, _mcp_manager, _mcp_server_infos = await _load_tools_from_config(_mcp_config)
+                    mcp_manager = _mcp_manager
                     if _mcp_tools:
                         tools.extend(_mcp_tools)
                         logger.info(f"Loaded {len(_mcp_tools)} MCP tools from {len(_mcp_server_infos)} server(s)")
@@ -452,11 +513,12 @@ async def create_claw_agent(
         except Exception as _mcp_exc:
             logger.warning("Failed to load MCP tools, continuing without them: %s", _mcp_exc)
 
-        from .prompt_registry import get_deep_agent_prompt_overrides
+        if prompt_overrides is None:
+            from .prompt_registry import get_deep_agent_prompt_overrides
 
-        deep_agent_prompt_overrides = (
-            prompt_overrides if prompt_overrides is not None else get_deep_agent_prompt_overrides()
-        )
+            deep_agent_prompt_overrides = get_deep_agent_prompt_overrides()
+        else:
+            deep_agent_prompt_overrides = prompt_overrides
         enabled_skill_sources = get_enabled_skill_sources()
         shell_backend, backend = create_claw_backend(working_directory)
         agent_middleware = [
@@ -490,6 +552,8 @@ async def create_claw_agent(
         )
 
         logger.info(f"Created Claw agent for directory: {working_directory}")
+        if mcp_manager is not None:
+            return ManagedClawAgent(agent, cleanup_callback=mcp_manager.cleanup)
         return agent
 
     except Exception as e:

@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>文件写入实时预览抽屉 - 原型</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f0f2f5;height:100vh;overflow:hidden}
+.claw-layout{display:flex;height:100vh}
+.sidebar{width:200px;background:#1e2530;color:white;padding:16px;display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+.sidebar-logo{font-size:18px;font-weight:bold;padding:8px 12px;margin-bottom:16px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:8px;text-align:center;color:white;border:none}
+.sidebar-item{padding:10px 12px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;gap:8px;opacity:0.7;transition:all 0.2s;color:white;text-decoration:none}
+.sidebar-item:hover,.sidebar-item.active{background:rgba(255,255,255,0.1);opacity:1}
+.sidebar-item.active{background:rgba(102,126,234,0.3);border-left:3px solid #667eea}
+.main-area{flex:1;display:flex;flex-direction:column;background:white;position:relative;overflow:hidden}
+.topbar{height:48px;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;padding:0 16px;font-size:14px;color:#666}
+.messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.message{max-width:75%;line-height:1.6}
+.message.user{align-self:flex-end}
+.message.assistant{align-self:flex-start}
+.message-bubble{padding:12px 16px;border-radius:12px;font-size:14px}
+.message.user .message-bubble{background:#667eea;color:white;border-bottom-right-radius:4px}
+.message.assistant .message-bubble{background:#f0f2f5;color:#333;border-bottom-left-radius:4px}
+.tool-call{background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:12px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.06)}
+.tool-call-header{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-weight:500}
+.tool-icon{width:28px;height:28px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:6px;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:bold}
+.tool-name{color:#667eea;font-weight:600}
+.tool-args{background:#f8f9fa;border-radius:4px;padding:8px 12px;font-family:monospace;font-size:12px;color:#555}
+.input-area{padding:16px;border-top:1px solid #e8e8e8;display:flex;gap:12px;align-items:flex-end}
+.input-box{flex:1;border:1px solid #ddd;border-radius:8px;padding:12px;font-size:14px;resize:none;outline:none;min-height:44px;max-height:120px}
+.input-box:focus{border-color:#667eea}
+.send-btn{width:44px;height:44px;border:none;border-radius:8px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;transition:transform 0.2s}
+.send-btn:hover{transform:scale(1.05)}
+.file-drawer{position:fixed;top:0;left:200px;bottom:0;width:0;background:#1a1d23;transition:width 0.4s cubic-bezier(0.4,0,0.2,1);overflow:hidden;display:flex;flex-direction:column;box-shadow:4px 0 24px rgba(0,0,0,0.15);z-index:100}
+.file-drawer.open{width:45%;min-width:400px;max-width:700px}
+.drawer-header{height:52px;border-bottom:1px solid #2a2e36;display:flex;align-items:center;padding:0 16px;gap:10px;flex-shrink:0}
+.drawer-title{flex:1;color:#e0e0e0;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.drawer-status{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500}
+.drawer-status.writing{background:rgba(102,199,132,0.2);color:#66c785}
+.drawer-status.done{background:rgba(102,126,234,0.2);color:#667eea}
+.drawer-close{width:28px;height:28px;border:none;background:transparent;color:#666;cursor:pointer;border-radius:4px;font-size:18px;display:flex;align-items:center;justify-content:center;transition:all 0.2s}
+.drawer-close:hover{background:rgba(255,255,255,0.1);color:#999}
+.drawer-editor{flex:1;overflow-y:auto;padding:16px;font-family:"SF Mono","Fira Code",Consolas,monospace;font-size:13px;line-height:1.7;color:#c9d1d9}
+.drawer-editor .line{display:block;white-space:pre}
+.drawer-editor .line.new{animation:lineAppear 0.2s ease-out}
+@keyframes lineAppear{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:translateX(0)}}
+.cursor{display:inline-block;width:2px;height:16px;background:#667eea;vertical-align:text-bottom;animation:blink 1s step-end infinite;margin-left:1px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.drawer-footer{height:36px;border-top:1px solid #2a2e36;display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0}
+.progress-bar{flex:1;height:3px;background:#2a2e36;border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:2px;transition:width 0.3s}
+.progress-text{color:#666;font-size:11px;min-width:45px;text-align:right}
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(100px);background:#333;color:white;padding:10px 20px;border-radius:8px;font-size:13px;opacity:0;transition:all 0.4s cubic-bezier(0.4,0,0.2,1);z-index:200;display:flex;align-items:center;gap:8px}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.rerun-btn{position:fixed;top:16px;right:16px;padding:8px 16px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;z-index:300;transition:background 0.2s}
+.rerun-btn:hover{background:#5a6fd6}
+</style>
+</head>
+<body>
+<button class="rerun-btn" onclick="resetAndRun()">重新演示</button>
+<div class="claw-layout">
+  <div class="sidebar">
+    <button class="sidebar-logo">DEEPCLAW</button>
+    <div class="sidebar-item active">💬 ClaW 智能对话</div>
+    <div class="sidebar-item">📄 文档解析</div>
+    <div class="sidebar-item">🔊 语音翻译</div>
+    <div class="sidebar-item">📚 知识库</div>
+    <div style="flex:1"></div>
+    <div class="sidebar-item">⚙️ 设置</div>
+  </div>
+  <div class="main-area">
+    <div class="topbar">💬 ClaW 智能助手</div>
+    <div class="messages">
+      <div class="message user"><div class="message-bubble">请帮我写一个 Python 脚本，功能是批量重命名文件夹中的图片文件，按拍摄日期排序。</div></div>
+      <div class="message assistant"><div class="message-bubble">好的，我来帮你创建这个脚本。它会读取文件的 EXIF 信息获取拍摄日期，然后按顺序重命名。</div></div>
+      <div class="message assistant">
+        <div class="tool-call">
+          <div class="tool-call-header">
+            <div class="tool-icon">W</div>
+            <span class="tool-name">write</span>
+            <span style="color:#999;font-weight:normal">正在写入文件...</span>
+          </div>
+          <div class="tool-args">path: <strong>scripts/rename_photos.py</strong></div>
+        </div>
+      </div>
+    </div>
+    <div class="input-area">
+      <textarea class="input-box" rows="1" placeholder="输入消息..."></textarea>
+      <button class="send-btn">➤</button>
+    </div>
+  </div>
+  <div class="file-drawer" id="fileDrawer">
+    <div class="drawer-header">
+      <span style="font-size:18px">📄</span>
+      <span class="drawer-title" id="drawerTitle">scripts/rename_photos.py</span>
+      <span class="drawer-status writing" id="drawerStatus">写入中...</span>
+      <button class="drawer-close" onclick="closeDrawer()">✕</button>
+    </div>
+    <div class="drawer-editor" id="drawerEditor">
+      <span id="codeContent"></span><span class="cursor" id="cursor"></span>
+    </div>
+    <div class="drawer-footer">
+      <span style="color:#666;font-size:12px">lines:</span>
+      <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+      <span class="progress-text" id="progressText">0/60</span>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"><span id="toastIcon">✅</span><span id="toastText">文件写入完成！</span></div>
+<script>
+var codeLines=[
+{t:"#!/usr/bin/env python3",c:"#6a9955"},
+{t:"# -*- coding: utf-8 -*-",c:"#6a9955"},
+{t:'"""批量重命名文件夹中的图片文件，按拍摄日期排序。"""',c:"#6a9955"},
+{t:"",c:""},
+{t:"import os",c:"#c586c0"},
+{t:"import sys",c:"#c586c0"},
+{t:"import shutil",c:"#c586c0"},
+{t:"from datetime import datetime",c:"#c586c0"},
+{t:"from pathlib import Path",c:"#c586c0"},
+{t:"from PIL import Image",c:"#c586c0"},
+{t:"",c:""},
+{t:"EXIF_DATE_FORMATS = [",c:"#dcdcaa"},
+{t:'    "%Y:%m:%d %H:%M:%S"',c:"#ce9178"},
+{t:'    "%Y-%m-%d %H:%M:%S"',c:"#ce9178"},
+{t:'    "%Y/%m/%d %H:%M:%S"',c:"#ce9178"},
+{t:"]",c:""},
+{t:"",c:""},
+{t:"def get_exif_date(image_path):",c:"#dcdcaa"},
+{t:'    """从图片 EXIF 信息中提取拍摄日期。"""',c:"#6a9955"},
+{t:"    try:",c:"#c586c0"},
+{t:"        img = Image.open(image_path)",c:"#9cdcfe"},
+{t:"        exif = img._getexif()",c:"#9cdcfe"},
+{t:"        if exif is None:",c:"#c586c0"},
+{t:"            return None",c:"#c586c0"},
+{t:"        date_str = exif.get(36867)  # DateTimeOriginal",c:"#9cdcfe"},
+{t:"        if not date_str:",c:"#c586c0"},
+{t:"            return None",c:"#c586c0"},
+{t:"        for fmt in EXIF_DATE_FORMATS:",c:"#c586c0"},
+{t:"            try:",c:"#c586c0"},
+{t:"                return datetime.strptime(date_str, fmt)",c:"#9cdcfe"},
+{t:"            except ValueError:",c:"#c586c0"},
+{t:"                continue",c:"#c586c0"},
+{t:"        return None",c:"#c586c0"},
+{t:"    except Exception as e:",c:"#c586c0"},
+{t:'        print(f"读取 EXIF 失败 {image_path}: {e}")',c:"#9cdcfe"},
+{t:"            return None",c:"#c586c0"},
+{t:"",c:""},
+{t:"",c:""},
+{t:"def rename_photos(folder_path, dry_run=True):",c:"#dcdcaa"},
+{t:'    """重命名文件夹中的所有图片文件。"""',c:"#6a9955"},
+{t:"    folder = Path(folder_path)",c:"#9cdcfe"},
+{t:"    if not folder.exists():",c:"#c586c0"},
+{t:'        print(f"文件夹不存在: {folder}")',c:"#9cdcfe"},
+{t:"        return False",c:"#c586c0"},
+{t:"",c:""},
+{t:'    extensions = {".jpg", ".jpeg", ".png", ".heic", ".raw"}',c:"#9cdcfe"},
+{t:"    photos = []",c:"#9cdcfe"},
+{t:"",c:""},
+{t:"    for f in folder.iterdir():",c:"#9cdcfe"},
+{t:"        if f.suffix.lower() in extensions:",c:"#c586c0"},
+{t:"            date = get_exif_date(f)",c:"#9cdcfe"},
+{t:"            photos.append((f, date))",c:"#9cdcfe"},
+{t:"",c:""},
+{t:"    photos.sort(key=lambda x: x[1] or datetime.min)",c:"#9cdcfe"},
+{t:"",c:""},
+{t:"    for i, (photo, _) in enumerate(photos, 1):",c:"#9cdcfe"},
+{t:"        ext = photo.suffix",c:"#9cdcfe"},
+{t:'        new_name = f"IMG_{i:04d}{ext}"',c:"#9cdcfe"},
+{t:"        new_path = folder / new_name",c:"#9cdcfe"},
+{t:'        print(f"  {photo.name} -> {new_name}")',c:"#9cdcfe"},
+{t:"        if not dry_run:",c:"#c586c0"},
+{t:"            shutil.move(str(photo), str(new_path))",c:"#9cdcfe"},
+{t:"",c:""},
+{t:"    return True",c:"#c586c0"},
+{t:"",c:""},
+{t:'if __name__ == "__main__":',c:"#c586c0"},
+{t:"    if len(sys.argv) < 2:",c:"#c586c0"},
+{t:'        print("用法: python rename_photos.py <文件夹路径>")',c:"#9cdcfe"},
+{t:"        sys.exit(1)",c:"#c586c0"},
+{t:'    dry_run = "--dry-run" in sys.argv',c:"#9cdcfe"},
+{t:"    rename_photos(sys.argv[1], dry_run=dry_run)",c:"#9cdcfe"},
+];
+var cur=0,open=false,closed=false,tmr=null;
+function o(){document.getElementById("fileDrawer").classList.add("open");open=true}
+function c(){
+  document.getElementById("fileDrawer").classList.remove("open");
+  open=false;closed=true;
+  if(tmr)clearTimeout(tmr);
+  setTimeout(resetAndRun,4000);
+}
+function toast(t,i){
+  var e=document.getElementById("toast");
+  document.getElementById("toastText").textContent=t;
+  document.getElementById("toastIcon").textContent=i;
+  e.classList.add("show");
+  setTimeout(function(){e.classList.remove("show")},3500);
+}
+function typeCode(){
+  if(!open||closed)return;
+  if(cur>=codeLines.length){
+    document.getElementById("cursor").style.display="none";
+    var s=document.getElementById("drawerStatus");
+    s.textContent="写入完成";
+    s.className="drawer-status done";
+    toast("文件已保存到 scripts/rename_photos.py","✅");
+    setTimeout(function(){if(open)c()},5000);
+    return;
+  }
+  var l=codeLines[cur];
+  var p=document.getElementById("codeContent");
+  var s=document.createElement("span");
+  s.className="line new";
+  s.style.color=l.c||"#c9d1d9";
+  s.textContent=l.t+"\n";
+  p.appendChild(s);
+  var e=document.getElementById("drawerEditor");
+  e.scrollTop=e.scrollHeight;
+  var pct=Math.round((cur+1)/codeLines.length*100);
+  document.getElementById("progressFill").style.width=pct+"%";
+  document.getElementById("progressText").textContent=(cur+1)+"/"+codeLines.length;
+  cur++;
+  var d=25;
+  if(l.t==="")d=20;
+  else if(l.c==="#dcdcaa"||l.c==="#c586c0")d=35+Math.random()*50;
+  else d=30+Math.random()*40;
+  tmr=setTimeout(typeCode,d);
+}
+function resetAndRun(){
+  if(tmr)clearTimeout(tmr);
+  cur=0;closed=false;open=false;
+  document.getElementById("fileDrawer").classList.remove("open");
+  document.getElementById("codeContent").innerHTML="";
+  document.getElementById("cursor").style.display="inline-block";
+  document.getElementById("progressFill").style.width="0%";
+  document.getElementById("progressText").textContent="0/"+codeLines.length;
+  var s=document.getElementById("drawerStatus");
+  s.textContent="写入中...";
+  s.className="drawer-status writing";
+  setTimeout(function(){o();setTimeout(typeCode,600)},300);
+}
+setTimeout(function(){o();setTimeout(typeCode,600)},1500);
+</script>
+</body>
+</html>

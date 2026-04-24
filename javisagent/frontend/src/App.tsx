@@ -6,15 +6,10 @@ import { CLAW_STREAM_STATUS_EVENT, type ClawStreamStatusDetail } from "./constan
 import "./styles/global.css";
 
 const ClawChatPage = lazy(() => import("./pages/ClawChatPage"));
-const ChannelsPage = lazy(() => import("./pages/ChannelsPage"));
 const ClawMcpPage = lazy(() => import("./pages/ClawMcpPage"));
 const ClawSkillsPage = lazy(() => import("./pages/ClawSkillsPage"));
-const DocumentParsePage = lazy(() => import("./pages/DocumentParsePage"));
-const IndustryResearchPage = lazy(() => import("./pages/IndustryResearchPage"));
-const KnowledgeBasePage = lazy(() => import("./pages/KnowledgeBasePage"));
-const KnowledgeChatPage = lazy(() => import("./pages/KnowledgeChatPage"));
+const ChannelsPage = lazy(() => import("./pages/ChannelsPage"));
 const PromptManagementPage = lazy(() => import("./pages/PromptManagementPage"));
-const RealtimeTranslatePage = lazy(() => import("./pages/RealtimeTranslatePage"));
 
 const EMPTY_CLAW_STREAM_STATUS: ClawStreamStatusDetail = {
   sending: false,
@@ -24,7 +19,7 @@ const EMPTY_CLAW_STREAM_STATUS: ClawStreamStatusDetail = {
 
 const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(() => {
-    return localStorage.getItem("javisagent_current_page") || "document-parse";
+    return localStorage.getItem("javisagent_current_page") || "claw-chat";
   });
   const [hasOpenedClawChat, setHasOpenedClawChat] = useState(() => currentPage === "claw-chat");
   const [clawStreamStatus, setClawStreamStatus] = useState<ClawStreamStatusDetail>(EMPTY_CLAW_STREAM_STATUS);
@@ -57,14 +52,6 @@ const App: React.FC = () => {
 
   const renderNonClawPage = () => {
     switch (currentPage) {
-      case "document-parse":
-        return <DocumentParsePage />;
-      case "realtime-translate":
-        return <RealtimeTranslatePage />;
-      case "knowledge-base":
-        return <KnowledgeBasePage />;
-      case "knowledge-chat":
-        return <KnowledgeChatPage />;
       case "claw-skills":
         return <ClawSkillsPage />;
       case "prompt-management":
@@ -73,10 +60,8 @@ const App: React.FC = () => {
         return <ChannelsPage initialChannel="qq" />;
       case "mcp-management":
         return <ClawMcpPage />;
-      case "industry-research":
-        return <IndustryResearchPage />;
       default:
-        return <DocumentParsePage />;
+        return <ClawSkillsPage />;
     }
   };
 

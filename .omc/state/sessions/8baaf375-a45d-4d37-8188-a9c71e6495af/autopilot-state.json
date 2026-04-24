@@ -1,8 +1,0 @@
-{
-  "active": true,
-  "started_at": "2026-02-11T13:05:48.061Z",
-  "original_prompt": "/oh-my-claudecode:autopilot  \n1、在解析结果区域，当解析的时候，不能仅展示转圈，应该展示当前解析了多少页，总共多少页，提示用户，减少等待焦虑\n2、在文件预览区域，应该展示出文档，支持pDF,WORD,TXT以及图片\n3、文件预览和解析结果的区域高度应该自适应窗口的高度",
-  "session_id": "8baaf375-a45d-4d37-8188-a9c71e6495af",
-  "reinforcement_count": 20,
-  "last_checked_at": "2026-02-11T13:49:43.092Z"
-}

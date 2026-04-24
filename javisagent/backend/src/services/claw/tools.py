@@ -148,8 +148,42 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
         )
         response.raise_for_status()
 
+        # 处理编码问题：优先使用响应头中的编码，否则尝试检测编码
+        content_type = response.headers.get("Content-Type", "")
+        encoding = None
+
+        # 从 Content-Type 中提取 charset
+        if "charset=" in content_type.lower():
+            import re
+
+            match = re.search(r"charset=([^\s;]+)", content_type, re.IGNORECASE)
+            if match:
+                encoding = match.group(1).strip()
+
+        # 如果没有找到编码，根据响应内容检测
+        if not encoding:
+            # 尝试用常见中文编码解码
+            for enc in ["utf-8", "gbk", "gb2312", "gb18030"]:
+                try:
+                    decoded = response.content.decode(enc)
+                    # 检查是否包含常见的中文字符（避免误判）
+                    if any("一" <= c <= "鿿" for c in decoded[:500]):
+                        encoding = enc
+                        break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+
+        # 使用检测到的编码重新解码
+        if encoding:
+            try:
+                text = response.content.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                text = response.text
+        else:
+            text = response.text
+
         # 转换 HTML 内容为 markdown
-        markdown_content = markdownify(response.text)
+        markdown_content = markdownify(text)
 
         return {
             "url": str(response.url),

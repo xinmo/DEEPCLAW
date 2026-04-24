@@ -9,7 +9,6 @@ from .claw import (
     MessageRole,
     ToolCallStatus,
 )
-from .knowledge import Conversation, KBDocument, KnowledgeBase, Message, ModelConfig
 from .task import Task, TaskStatus
 
 __all__ = [
@@ -19,11 +18,6 @@ __all__ = [
     "get_db",
     "Task",
     "TaskStatus",
-    "KnowledgeBase",
-    "KBDocument",
-    "Conversation",
-    "Message",
-    "ModelConfig",
     "ChannelConfig",
     "ChannelSession",
     "ClawConversation",

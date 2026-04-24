@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import sys
 import types
@@ -211,15 +212,17 @@ def test_create_claw_agent_uses_global_composite_backend(monkeypatch):
     )
     monkeypatch.setattr(claw_agent_module, "create_deep_agent", fake_create_deep_agent)
 
-    result = claw_agent_module.create_claw_agent(
-        working_directory=str(tmp_path),
-        llm_model="deepseek-chat",
-        conversation_id="conv-123",
-        custom_system_prompt="Workspace: {working_directory}",
-        prompt_overrides={
-            "summarization_tool_system_prompt": "Compact prompt snapshot",
-        },
-        turn_instruction="Use /brainstorming for this turn only.",
+    result = asyncio.run(
+        claw_agent_module.create_claw_agent(
+            working_directory=str(tmp_path),
+            llm_model="deepseek-chat",
+            conversation_id="conv-123",
+            custom_system_prompt="Workspace: {working_directory}",
+            prompt_overrides={
+                "summarization_tool_system_prompt": "Compact prompt snapshot",
+            },
+            turn_instruction="Use /brainstorming for this turn only.",
+        )
     )
 
     assert result == "fake-agent"

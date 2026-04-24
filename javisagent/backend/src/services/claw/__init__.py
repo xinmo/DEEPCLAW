@@ -10,6 +10,18 @@ def create_claw_agent(*args, **kwargs):
     return _create_claw_agent(*args, **kwargs)
 
 
+async def resolve_claw_agent(agent_or_awaitable):
+    from .agent import resolve_claw_agent as _resolve_claw_agent
+
+    return await _resolve_claw_agent(agent_or_awaitable)
+
+
+async def cleanup_claw_agent(agent) -> None:
+    from .agent import cleanup_claw_agent as _cleanup_claw_agent
+
+    await _cleanup_claw_agent(agent)
+
+
 def validate_working_directory(path: str) -> tuple[bool, Optional[str]]:
     if not path:
         return False, "路径不能为空"
@@ -22,4 +34,9 @@ def validate_working_directory(path: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
-__all__ = ["create_claw_agent", "validate_working_directory"]
+__all__ = [
+    "cleanup_claw_agent",
+    "create_claw_agent",
+    "resolve_claw_agent",
+    "validate_working_directory",
+]
